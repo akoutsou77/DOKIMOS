@@ -9,6 +9,9 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -29,8 +32,23 @@ jobs:
           gradle-version: '8.9'
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: SyncCam-debug-apk
           path: synccam/app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish SyncCam v3.0.0 release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/agent/synccam-apk-build'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v3.0.0.apk
+          if gh release view v3.0.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v3.0.0 /tmp/SyncCam-v3.0.0.apk --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create v3.0.0 /tmp/SyncCam-v3.0.0.apk \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "SyncCam v3.0.0" \
+              --notes "Working SyncCam Android release. Supports two or more phones on the same local Wi-Fi or Android phone hotspot, direct host/client discovery, clock synchronisation, synchronized future-trigger capture, and the polished camera control interface."
+          fi
