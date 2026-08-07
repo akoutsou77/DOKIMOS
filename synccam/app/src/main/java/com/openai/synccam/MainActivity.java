@@ -6,6 +6,7 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -13,13 +14,19 @@ import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.Camera;
+import android.net.DhcpInfo;
 import android.net.Uri;
+import android.net.wifi.SoftApConfiguration;
+import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.MediaStore;
+import android.provider.Settings;
 import android.text.InputFilter;
 import android.text.InputType;
 import android.view.Gravity;
@@ -45,10 +52,12 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -70,7 +79,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     private SurfaceView surface;
     private TextView status, sync, peers, roleChip, groupChip, countdownBadge, trigger;
-    private TextView syncValue, peerValue;
+    private TextView syncValue, peerValue, hotspotInfo;
     private EditText code;
     private View flashOverlay;
     private Camera camera;
@@ -81,6 +90,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private int sequence = 1;
     private volatile int activeCountdownSeq = -1;
+
+    private WifiManager.LocalOnlyHotspotReservation hotspotReservation;
+    private String hotspotSsid = "";
+    private String hotspotPassword = "";
 
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
@@ -154,15 +167,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
         LinearLayout deck = new LinearLayout(this);
         deck.setOrientation(LinearLayout.VERTICAL);
-        deck.setPadding(dp(16), dp(14), dp(16), dp(14));
+        deck.setPadding(dp(16), dp(12), dp(16), dp(12));
         deck.setBackground(roundRect(BG_PANEL, 28, 0, 0));
 
         LinearLayout stateRow = new LinearLayout(this);
         stateRow.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout stateText = new LinearLayout(this);
         stateText.setOrientation(LinearLayout.VERTICAL);
-        status = label("Starting…", 15, Color.WHITE, Typeface.BOLD);
-        TextView stateHint = label("Keep all phones on the same Wi-Fi network", 11, MUTED, Typeface.NORMAL);
+        status = label("Starting…", 14, Color.WHITE, Typeface.BOLD);
+        TextView stateHint = label("Router Wi-Fi or one-phone hotspot are both supported", 10, MUTED, Typeface.NORMAL);
         stateHint.setPadding(0, dp(3), 0, 0);
         stateText.addView(status);
         stateText.addView(stateHint);
@@ -173,7 +186,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         deck.addView(stateRow);
 
         LinearLayout metrics = new LinearLayout(this);
-        metrics.setPadding(0, dp(12), 0, 0);
+        metrics.setPadding(0, dp(10), 0, 0);
         LinearLayout syncCard = metricCard("CLOCK SYNC", "WAITING");
         syncValue = (TextView) syncCard.getChildAt(1);
         sync = (TextView) syncCard.getChildAt(2);
@@ -187,7 +200,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         TextView groupLabel = label("CAPTURE GROUP", 10, MUTED, Typeface.BOLD);
         groupLabel.setLetterSpacing(0.12f);
         LinearLayout.LayoutParams groupLabelLp = new LinearLayout.LayoutParams(-1, -2);
-        groupLabelLp.topMargin = dp(13);
+        groupLabelLp.topMargin = dp(10);
         deck.addView(groupLabel, groupLabelLp);
 
         LinearLayout codeRow = new LinearLayout(this);
@@ -196,7 +209,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         code.setTextColor(Color.WHITE);
         code.setHintTextColor(0xFF7F8793);
         code.setHint("000000");
-        code.setTextSize(21);
+        code.setTextSize(20);
         code.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
         code.setGravity(Gravity.CENTER);
         code.setSingleLine(true);
@@ -205,34 +218,40 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         code.setSelectAllOnFocus(true);
         code.setBackground(roundRect(BG_CARD, 14, 1, 0xFF454C58));
         code.setPadding(dp(12), 0, dp(12), 0);
-        codeRow.addView(code, new LinearLayout.LayoutParams(0, dp(52), 1f));
+        codeRow.addView(code, new LinearLayout.LayoutParams(0, dp(48), 1f));
 
         TextView copy = smallButton("COPY");
-        LinearLayout.LayoutParams copyLp = new LinearLayout.LayoutParams(dp(72), dp(52));
+        LinearLayout.LayoutParams copyLp = new LinearLayout.LayoutParams(dp(72), dp(48));
         copyLp.leftMargin = dp(8);
         codeRow.addView(copy, copyLp);
-        deck.addView(codeRow, new LinearLayout.LayoutParams(-1, dp(52)));
+        deck.addView(codeRow, new LinearLayout.LayoutParams(-1, dp(48)));
 
         LinearLayout roles = new LinearLayout(this);
-        roles.setPadding(0, dp(9), 0, 0);
-        TextView host = actionButton("CREATE HOST", 0xFF343B46, Color.WHITE);
+        roles.setPadding(0, dp(8), 0, 0);
+        TextView host = actionButton("HOST + HOTSPOT", 0xFF343B46, Color.WHITE);
         TextView join = actionButton("JOIN GROUP", 0xFF343B46, Color.WHITE);
         roles.addView(host, weightedButton(1f, 0, dp(5)));
         roles.addView(join, weightedButton(1f, dp(5), 0));
         deck.addView(roles);
 
+        hotspotInfo = label("HOST: creates local Wi-Fi when possible  •  CLIENT: connect to that Wi-Fi, then JOIN", 10, 0xFF9DA7B4, Typeface.NORMAL);
+        hotspotInfo.setGravity(Gravity.CENTER);
+        hotspotInfo.setPadding(dp(4), dp(7), dp(4), dp(3));
+        hotspotInfo.setOnClickListener(v -> openWifiSettings());
+        deck.addView(hotspotInfo);
+
         LinearLayout shutterRow = new LinearLayout(this);
         shutterRow.setGravity(Gravity.CENTER);
-        shutterRow.setPadding(0, dp(12), 0, dp(6));
+        shutterRow.setPadding(0, dp(8), 0, dp(4));
 
         TextView flip = smallButton("↻\nCAMERA");
         flip.setGravity(Gravity.CENTER);
-        shutterRow.addView(flip, new LinearLayout.LayoutParams(dp(74), dp(64)));
+        shutterRow.addView(flip, new LinearLayout.LayoutParams(dp(70), dp(60)));
 
         FrameLayout shutterWrap = new FrameLayout(this);
-        LinearLayout.LayoutParams swLp = new LinearLayout.LayoutParams(dp(112), dp(112));
-        swLp.leftMargin = dp(22);
-        swLp.rightMargin = dp(22);
+        LinearLayout.LayoutParams swLp = new LinearLayout.LayoutParams(dp(104), dp(104));
+        swLp.leftMargin = dp(20);
+        swLp.rightMargin = dp(20);
         shutterRow.addView(shutterWrap, swLp);
 
         View ring = new View(this);
@@ -252,18 +271,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         trigger.setBackground(triggerBg);
         trigger.setEnabled(false);
         trigger.setAlpha(0.42f);
-        FrameLayout.LayoutParams trigLp = new FrameLayout.LayoutParams(dp(86), dp(86), Gravity.CENTER);
+        FrameLayout.LayoutParams trigLp = new FrameLayout.LayoutParams(dp(80), dp(80), Gravity.CENTER);
         shutterWrap.addView(trigger, trigLp);
 
-        TextView localInfo = smallButton("2.5s\nSYNC");
-        localInfo.setEnabled(false);
-        localInfo.setAlpha(0.70f);
-        localInfo.setGravity(Gravity.CENTER);
-        shutterRow.addView(localInfo, new LinearLayout.LayoutParams(dp(74), dp(64)));
-
+        TextView wifi = smallButton("WI-FI\nSETTINGS");
+        wifi.setGravity(Gravity.CENTER);
+        shutterRow.addView(wifi, new LinearLayout.LayoutParams(dp(70), dp(60)));
         deck.addView(shutterRow);
 
-        TextView footer = label("Photos → Pictures / SyncCam   •   Scheduled local shutter on every phone", 10, 0xFF8D96A3, Typeface.NORMAL);
+        TextView footer = label("Direct gateway + unicast trigger  •  multicast used only as fallback", 9, 0xFF8D96A3, Typeface.NORMAL);
         footer.setGravity(Gravity.CENTER);
         deck.addView(footer);
 
@@ -281,23 +297,24 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
         setContentView(root);
 
-        host.setOnClickListener(v -> host());
+        host.setOnClickListener(v -> hostAndHotspot());
         join.setOnClickListener(v -> join());
         trigger.setOnClickListener(v -> triggerAll());
         flip.setOnClickListener(v -> flip());
-        copy.setOnClickListener(v -> copyCode());
+        wifi.setOnClickListener(v -> openWifiSettings());
+        copy.setOnClickListener(v -> copyConnectionInfo());
     }
 
     private LinearLayout metricCard(String title, String value) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(12), dp(10), dp(12), dp(9));
+        card.setPadding(dp(12), dp(8), dp(12), dp(8));
         card.setBackground(roundRect(BG_CARD, 14, 1, 0xFF353C47));
         TextView t = label(title, 9, MUTED, Typeface.BOLD);
         t.setLetterSpacing(0.10f);
-        TextView v = label(value, 17, Color.WHITE, Typeface.BOLD);
+        TextView v = label(value, 16, Color.WHITE, Typeface.BOLD);
         v.setPadding(0, dp(2), 0, 0);
-        TextView d = label("—", 10, 0xFF99A3B0, Typeface.NORMAL);
+        TextView d = label("—", 9, 0xFF99A3B0, Typeface.NORMAL);
         d.setPadding(0, dp(1), 0, 0);
         card.addView(t);
         card.addView(v);
@@ -323,16 +340,16 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     private TextView actionButton(String s, int bg, int fg) {
-        TextView b = label(s, 12, fg, Typeface.BOLD);
+        TextView b = label(s, 11, fg, Typeface.BOLD);
         b.setGravity(Gravity.CENTER);
-        b.setLetterSpacing(0.06f);
+        b.setLetterSpacing(0.04f);
         b.setBackground(roundRect(bg, 14, 1, 0xFF4B5360));
         return b;
     }
 
     private TextView smallButton(String s) {
         TextView b = actionButton(s, 0xFF2C323C, 0xFFE2E6EC);
-        b.setTextSize(10);
+        b.setTextSize(9);
         return b;
     }
 
@@ -349,14 +366,14 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     private LinearLayout.LayoutParams weightedCard(float weight, int left, int right) {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(72), weight);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(66), weight);
         p.leftMargin = left;
         p.rightMargin = right;
         return p;
     }
 
     private LinearLayout.LayoutParams weightedButton(float weight, int left, int right) {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(48), weight);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(46), weight);
         p.leftMargin = left;
         p.rightMargin = right;
         return p;
@@ -370,9 +387,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     private void ui(Runnable r) { runOnUiThread(r); }
 
-    private void setStatus(String s) {
-        ui(() -> status.setText(s));
-    }
+    private void setStatus(String s) { ui(() -> status.setText(s)); }
 
     private void setSync(String s) {
         ui(() -> {
@@ -421,23 +436,43 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         });
     }
 
-    private void copyCode() {
+    private void openWifiSettings() {
+        try {
+            if (Build.VERSION.SDK_INT >= 29) startActivity(new Intent(Settings.Panel.ACTION_WIFI));
+            else startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS));
+        } catch (Exception e) {
+            startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS));
+        }
+    }
+
+    private void copyConnectionInfo() {
         String c = code.getText().toString().trim();
         if (c.length() != 6) {
             Toast.makeText(this, "Create or enter a group first", Toast.LENGTH_SHORT).show();
             return;
         }
+        String text = "SyncCam group: " + c;
+        if (!hotspotSsid.isEmpty()) {
+            text += "\nWi-Fi SSID: " + hotspotSsid;
+            if (!hotspotPassword.isEmpty()) text += "\nWi-Fi password: " + hotspotPassword;
+        }
         ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-        cm.setPrimaryClip(ClipData.newPlainText("SyncCam group code", c));
-        Toast.makeText(this, "Group code copied", Toast.LENGTH_SHORT).show();
+        cm.setPrimaryClip(ClipData.newPlainText("SyncCam connection", text));
+        Toast.makeText(this, "Connection information copied", Toast.LENGTH_SHORT).show();
     }
 
     private void requestPermissions() {
         ArrayList<String> p = new ArrayList<>();
-        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) p.add(Manifest.permission.CAMERA);
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) p.add(Manifest.permission.NEARBY_WIFI_DEVICES);
-        if (Build.VERSION.SDK_INT <= 28 && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) p.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
-        if (p.isEmpty()) startCore(); else requestPermissions(p.toArray(new String[0]), REQ);
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
+            p.add(Manifest.permission.CAMERA);
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED)
+            p.add(Manifest.permission.NEARBY_WIFI_DEVICES);
+        if (Build.VERSION.SDK_INT <= 32 && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+            p.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        if (Build.VERSION.SDK_INT <= 28 && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
+            p.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        if (p.isEmpty()) startCore();
+        else requestPermissions(p.toArray(new String[0]), REQ);
     }
 
     @Override public void onRequestPermissionsResult(int r, String[] p, int[] g) {
@@ -504,7 +539,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         openCamera();
     }
 
-    private void host() {
+    private void hostAndHotspot() {
         if (net == null) return;
         String c = String.format(Locale.US, "%06d", 100000 + new Random().nextInt(900000));
         code.setText(c);
@@ -512,7 +547,86 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         setTriggerEnabled(true);
         setRole("HOST", 0xCC3A7255);
         setGroupChip(c);
-        setStatus("Host ready • share code " + c);
+        setStatus("Host ready • starting local hotspot…");
+        startLocalHotspot();
+    }
+
+    private void startLocalHotspot() {
+        if (hotspotReservation != null) {
+            setStatus("Host ready • local hotspot already active");
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
+            setStatus("Nearby Wi-Fi permission required for hotspot");
+            requestPermissions(new String[]{Manifest.permission.NEARBY_WIFI_DEVICES}, REQ);
+            return;
+        }
+        if (Build.VERSION.SDK_INT <= 32 && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            setStatus("Location permission required for hotspot on this Android version");
+            requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQ);
+            return;
+        }
+        try {
+            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            wm.startLocalOnlyHotspot(new WifiManager.LocalOnlyHotspotCallback() {
+                @Override public void onStarted(WifiManager.LocalOnlyHotspotReservation reservation) {
+                    hotspotReservation = reservation;
+                    String ssid = "";
+                    String pass = "";
+                    try {
+                        if (Build.VERSION.SDK_INT >= 30) {
+                            SoftApConfiguration cfg = reservation.getSoftApConfiguration();
+                            ssid = cfg.getSsid();
+                            pass = cfg.getPassphrase();
+                        } else {
+                            WifiConfiguration cfg = reservation.getWifiConfiguration();
+                            if (cfg != null) {
+                                ssid = cfg.SSID;
+                                pass = cfg.preSharedKey;
+                            }
+                        }
+                    } catch (Exception ignored) { }
+                    hotspotSsid = ssid == null ? "" : stripQuotes(ssid);
+                    hotspotPassword = pass == null ? "" : stripQuotes(pass);
+                    final String shownSsid = hotspotSsid.isEmpty() ? "Android local hotspot" : hotspotSsid;
+                    ui(() -> {
+                        hotspotInfo.setText("HOTSPOT  " + shownSsid + (hotspotPassword.isEmpty() ? "" : "   •   PASS  " + hotspotPassword) + "   •   tap for Wi-Fi");
+                        hotspotInfo.setTextColor(GREEN);
+                    });
+                    setStatus("Hotspot active • connect the other phone, then JOIN group");
+                }
+
+                @Override public void onStopped() {
+                    hotspotReservation = null;
+                    hotspotSsid = "";
+                    hotspotPassword = "";
+                    ui(() -> {
+                        hotspotInfo.setText("Local hotspot stopped • tap for Wi-Fi settings");
+                        hotspotInfo.setTextColor(AMBER);
+                    });
+                    setStatus("Hotspot stopped • host control still active");
+                }
+
+                @Override public void onFailed(int reason) {
+                    hotspotReservation = null;
+                    ui(() -> {
+                        hotspotInfo.setText("Could not create local hotspot • enable phone hotspot manually, then connect client");
+                        hotspotInfo.setTextColor(AMBER);
+                    });
+                    setStatus("Host active • use manual Android hotspot");
+                }
+            }, new Handler(Looper.getMainLooper()));
+        } catch (SecurityException e) {
+            setStatus("Hotspot permission blocked • use manual Android hotspot");
+        } catch (Exception e) {
+            setStatus("Hotspot unavailable • use manual Android hotspot");
+        }
+    }
+
+    private String stripQuotes(String s) {
+        if (s == null) return "";
+        if (s.length() >= 2 && s.startsWith("\"") && s.endsWith("\"")) return s.substring(1, s.length() - 1);
+        return s;
     }
 
     private void join() {
@@ -526,7 +640,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         setTriggerEnabled(false);
         setRole("CLIENT", 0xCC3C5F86);
         setGroupChip(c);
-        setStatus("Joining group " + c + "…");
+        InetAddress gw = net.gatewayAddress();
+        if (gw == null) setStatus("Client searching • connect to host hotspot/Wi-Fi if needed");
+        else setStatus("Client searching host at gateway " + gw.getHostAddress());
     }
 
     private void triggerAll() {
@@ -613,14 +729,20 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         closeCamera();
         scheduler.shutdownNow();
         if (net != null) net.stop();
+        try {
+            if (hotspotReservation != null) hotspotReservation.close();
+        } catch (Exception ignored) { }
+        hotspotReservation = null;
     }
 
     private final class Net {
         final ScheduledExecutorService io = Executors.newScheduledThreadPool(2);
         final Map<String, Long> peerSeen = new HashMap<>();
+        final Map<String, InetAddress> peerAddress = new HashMap<>();
         final ArrayList<Sample> samples = new ArrayList<>();
         MulticastSocket socket;
         InetAddress multicast;
+        InetAddress limitedBroadcast;
         InetAddress hostAddr;
         WifiManager.MulticastLock lock;
         volatile String groupCode = "";
@@ -634,15 +756,21 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             io.execute(() -> {
                 try {
                     WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-                    lock = wm.createMulticastLock("SyncCam");
-                    lock.setReferenceCounted(false);
-                    lock.acquire();
+                    try {
+                        lock = wm.createMulticastLock("SyncCam");
+                        lock.setReferenceCounted(false);
+                        lock.acquire();
+                    } catch (Exception ignored) { }
+
                     multicast = InetAddress.getByName(GROUP);
+                    limitedBroadcast = InetAddress.getByName("255.255.255.255");
                     socket = new MulticastSocket(null);
                     socket.setReuseAddress(true);
+                    socket.setBroadcast(true);
                     socket.bind(new InetSocketAddress(PORT));
-                    socket.joinGroup(multicast);
-                    setStatus("Network ready • choose host or join");
+                    try { socket.joinGroup(multicast); } catch (Exception ignored) { }
+
+                    setStatus("Network ready • hotspot/direct mode enabled");
                     receive();
                 } catch (Exception e) {
                     setStatus("Network error • " + e.getMessage());
@@ -656,7 +784,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             host = true;
             hostAddr = null;
             samples.clear();
-            peerSeen.clear();
+            synchronized (peerSeen) {
+                peerSeen.clear();
+                peerAddress.clear();
+            }
             setSync("HOST • local clock is reference");
             setPeers("0 connected clients");
         }
@@ -671,16 +802,69 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             setPeers("client mode");
         }
 
+        InetAddress gatewayAddress() {
+            try {
+                WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                DhcpInfo d = wm.getDhcpInfo();
+                if (d == null || d.gateway == 0) return null;
+                int g = d.gateway;
+                byte[] q = new byte[]{
+                        (byte) (g & 0xff),
+                        (byte) ((g >> 8) & 0xff),
+                        (byte) ((g >> 16) & 0xff),
+                        (byte) ((g >> 24) & 0xff)
+                };
+                return InetAddress.getByAddress(q);
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        InetAddress subnetBroadcast() {
+            try {
+                WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                DhcpInfo d = wm.getDhcpInfo();
+                if (d == null || d.ipAddress == 0 || d.netmask == 0) return null;
+                int b = (d.ipAddress & d.netmask) | ~d.netmask;
+                byte[] q = new byte[]{
+                        (byte) (b & 0xff),
+                        (byte) ((b >> 8) & 0xff),
+                        (byte) ((b >> 16) & 0xff),
+                        (byte) ((b >> 24) & 0xff)
+                };
+                return InetAddress.getByAddress(q);
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
         void tick() {
             if (socket == null || groupCode.isEmpty()) return;
             try {
                 if (host) {
-                    send(multicast, "BEACON|" + groupCode + "|" + deviceId + "|" + SystemClock.elapsedRealtimeNanos());
-                    long now = SystemClock.elapsedRealtime();
-                    peerSeen.entrySet().removeIf(e -> now - e.getValue() > 5000);
-                    setPeers(peerSeen.size() + " connected clients");
+                    String beacon = "BEACON|" + groupCode + "|" + deviceId + "|" + SystemClock.elapsedRealtimeNanos();
+                    send(multicast, beacon);
+                    send(limitedBroadcast, beacon);
+                    synchronized (peerSeen) {
+                        long now = SystemClock.elapsedRealtime();
+                        Set<String> stale = new HashSet<>();
+                        for (Map.Entry<String, Long> e : peerSeen.entrySet()) {
+                            if (now - e.getValue() > 5000) stale.add(e.getKey());
+                        }
+                        for (String id : stale) {
+                            peerSeen.remove(id);
+                            peerAddress.remove(id);
+                        }
+                        setPeers(peerSeen.size() + " connected clients");
+                    }
                 } else if (hostAddr == null) {
-                    send(multicast, "DISCOVER|" + groupCode + "|" + deviceId);
+                    String discover = "DISCOVER|" + groupCode + "|" + deviceId;
+                    InetAddress gateway = gatewayAddress();
+                    InetAddress subnet = subnetBroadcast();
+                    if (gateway != null) send(gateway, discover);
+                    if (subnet != null) send(subnet, discover);
+                    send(limitedBroadcast, discover);
+                    send(multicast, discover);
                 } else {
                     long t1 = SystemClock.elapsedRealtimeNanos();
                     send(hostAddr, "SYNC_REQ|" + groupCode + "|" + deviceId + "|" + (syncSeq++) + "|" + t1);
@@ -690,9 +874,19 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
         void sendCapture(int seq, long target) {
             String m = "CAPTURE|" + groupCode + "|" + seq + "|" + target;
+            sendCaptureBurst(m);
+            io.schedule(() -> sendCaptureBurst(m), 70, TimeUnit.MILLISECONDS);
+            io.schedule(() -> sendCaptureBurst(m), 160, TimeUnit.MILLISECONDS);
+        }
+
+        void sendCaptureBurst(String m) {
+            Set<InetAddress> destinations = new HashSet<>();
+            synchronized (peerSeen) {
+                destinations.addAll(peerAddress.values());
+            }
+            for (InetAddress a : destinations) send(a, m);
             send(multicast, m);
-            io.schedule(() -> send(multicast, m), 70, TimeUnit.MILLISECONDS);
-            io.schedule(() -> send(multicast, m), 160, TimeUnit.MILLISECONDS);
+            send(limitedBroadcast, m);
         }
 
         void report(int seq, long callNs, String uri) {
@@ -715,27 +909,37 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             }
         }
 
+        void rememberPeer(String id, InetAddress address) {
+            synchronized (peerSeen) {
+                peerSeen.put(id, SystemClock.elapsedRealtime());
+                peerAddress.put(id, address);
+            }
+        }
+
         void handle(String m, InetAddress from, long recv) {
             try {
                 String[] p = m.split("\\|");
                 if (p.length < 2 || !p[1].equals(groupCode)) return;
                 if (host) {
-                    if ("DISCOVER".equals(p[0])) {
-                        peerSeen.put(p[2], SystemClock.elapsedRealtime());
+                    if ("DISCOVER".equals(p[0]) && p.length >= 3) {
+                        rememberPeer(p[2], from);
                         send(from, "BEACON|" + groupCode + "|" + deviceId + "|" + SystemClock.elapsedRealtimeNanos());
                     } else if ("SYNC_REQ".equals(p[0]) && p.length >= 5) {
-                        peerSeen.put(p[2], SystemClock.elapsedRealtime());
+                        rememberPeer(p[2], from);
                         long t2 = recv;
                         long t3 = SystemClock.elapsedRealtimeNanos();
                         send(from, "SYNC_RESP|" + groupCode + "|" + p[2] + "|" + p[3] + "|" + p[4] + "|" + t2 + "|" + t3);
-                    } else if ("CAPTURED".equals(p[0])) {
-                        peerSeen.put(p[2], SystemClock.elapsedRealtime());
+                    } else if ("CAPTURED".equals(p[0]) && p.length >= 3) {
+                        rememberPeer(p[2], from);
                     }
                 } else {
                     if ("BEACON".equals(p[0])) {
-                        hostAddr = from;
-                        setStatus("Host found • calibrating clocks");
+                        if (hostAddr == null || !hostAddr.equals(from)) {
+                            hostAddr = from;
+                            setStatus("Host found at " + from.getHostAddress() + " • calibrating clocks");
+                        }
                     } else if ("SYNC_RESP".equals(p[0]) && p.length >= 7 && p[2].equals(deviceId)) {
+                        hostAddr = from;
                         long t1 = Long.parseLong(p[4]);
                         long t2 = Long.parseLong(p[5]);
                         long t3 = Long.parseLong(p[6]);
@@ -746,6 +950,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     } else if ("CAPTURE".equals(p[0]) && p.length >= 4) {
                         int seq = Integer.parseInt(p[2]);
                         if (captureSeen.put(seq, true) != null) return;
+                        hostAddr = from;
                         long hostTarget = Long.parseLong(p[3]);
                         long localTarget = hostTarget - hostMinusClient;
                         scheduleCapture(seq, localTarget, "CLIENT");
@@ -769,6 +974,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 String state = c.size() >= 5 ? "SYNCED" : "calibrating";
                 setSync(String.format(Locale.US, "%s • offset %+.3f ms • RTT %.2f ms",
                         state, hostMinusClient / 1e6, c.get(0).rtt / 1e6));
+                if (c.size() >= 5) setStatus("Connected • direct host link " + (hostAddr == null ? "" : hostAddr.getHostAddress()));
             }
         }
 
@@ -785,7 +991,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             io.shutdownNow();
             try {
                 if (socket != null) {
-                    try { socket.leaveGroup(multicast); } catch (Exception ignored) { }
+                    try { if (multicast != null) socket.leaveGroup(multicast); } catch (Exception ignored) { }
                     socket.close();
                 }
             } catch (Exception ignored) { }
@@ -813,7 +1019,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         @Override protected void onDraw(Canvas c) {
             super.onDraw(c);
             float cx = getWidth() / 2f;
-            float cy = getHeight() * 0.40f;
+            float cy = getHeight() * 0.38f;
             float d = 16f * getResources().getDisplayMetrics().density;
             float gap = 6f * getResources().getDisplayMetrics().density;
             c.drawLine(cx - d, cy, cx - gap, cy, p);
