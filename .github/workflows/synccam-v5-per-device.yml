@@ -61,3 +61,5 @@ jobs:
               --title "SyncCam v5.0.0" \
               --notes "Per-device host photo sync. The host lists each connected client with an individual SYNC control, plus SYNC ALL. Client uploads are incremental within the app session so already transferred JPEGs are not resent. Photos are stored in Pictures/SyncCam on the host."
           fi
+
+# trigger revision 2
