@@ -43,6 +43,7 @@ jobs:
         run: |
           rm -f tools/apply_v5_per_device_sync.py
           rm -f .github/workflows/synccam-v5-per-device.yml
+          rm -f .github/v5-device-sync-trigger.txt
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
       - name: Commit validated v5 source to PR branch
