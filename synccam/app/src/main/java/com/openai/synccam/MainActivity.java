@@ -79,13 +79,14 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     private SurfaceView surface;
     private TextView status, sync, peers, roleChip, groupChip, countdownBadge, trigger;
-    private TextView syncValue, peerValue, hotspotInfo;
+    private TextView syncValue, peerValue, hotspotInfo, photoSync;
     private EditText code;
     private View flashOverlay;
     private Camera camera;
     private int cameraId = 0;
     private boolean surfaceReady;
     private Net net;
+    private PhotoTransfer photoTransfer;
     private final String deviceId = UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.US);
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private int sequence = 1;
@@ -102,6 +103,20 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         w.setStatusBarColor(Color.BLACK);
         w.setNavigationBarColor(Color.BLACK);
         buildUi();
+        photoTransfer = new PhotoTransfer(this, deviceId, new PhotoTransfer.Listener() {
+            @Override public boolean acceptIncoming(String groupCode) {
+                return net != null && net.host && groupCode != null && groupCode.equals(net.groupCode);
+            }
+
+            @Override public void onPhotoReceived(String remoteDeviceId, int sequence, String savedUri, int totalReceived) {
+                setStatus("Host saved photo from " + remoteDeviceId + " • capture #" + sequence + " • total received " + totalReceived);
+            }
+
+            @Override public void onTransferStatus(String message) {
+                setStatus(message);
+            }
+        });
+        photoTransfer.start();
         requestPermissions();
     }
 
@@ -274,12 +289,14 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         FrameLayout.LayoutParams trigLp = new FrameLayout.LayoutParams(dp(80), dp(80), Gravity.CENTER);
         shutterWrap.addView(trigger, trigLp);
 
-        TextView wifi = smallButton("WI-FI\nSETTINGS");
-        wifi.setGravity(Gravity.CENTER);
-        shutterRow.addView(wifi, new LinearLayout.LayoutParams(dp(70), dp(60)));
+        photoSync = smallButton("SYNC\nPHOTOS");
+        photoSync.setGravity(Gravity.CENTER);
+        photoSync.setEnabled(false);
+        photoSync.setAlpha(0.42f);
+        shutterRow.addView(photoSync, new LinearLayout.LayoutParams(dp(70), dp(60)));
         deck.addView(shutterRow);
 
-        TextView footer = label("Direct gateway + unicast trigger  •  multicast used only as fallback", 9, 0xFF8D96A3, Typeface.NORMAL);
+        TextView footer = label("CAPTURE ALL synchronizes shutters  •  SYNC PHOTOS copies client JPEGs to the host phone", 9, 0xFF8D96A3, Typeface.NORMAL);
         footer.setGravity(Gravity.CENTER);
         deck.addView(footer);
 
@@ -301,7 +318,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         join.setOnClickListener(v -> join());
         trigger.setOnClickListener(v -> triggerAll());
         flip.setOnClickListener(v -> flip());
-        wifi.setOnClickListener(v -> openWifiSettings());
+        photoSync.setOnClickListener(v -> syncPhotosToHost());
         copy.setOnClickListener(v -> copyConnectionInfo());
     }
 
@@ -436,6 +453,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         });
     }
 
+    private void setPhotoSyncEnabled(boolean enabled) {
+        ui(() -> {
+            photoSync.setEnabled(enabled);
+            photoSync.setAlpha(enabled ? 1f : 0.42f);
+        });
+    }
+
     private void openWifiSettings() {
         try {
             if (Build.VERSION.SDK_INT >= 29) startActivity(new Intent(Settings.Panel.ACTION_WIFI));
@@ -545,6 +569,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         code.setText(c);
         net.becomeHost(c);
         setTriggerEnabled(true);
+        setPhotoSyncEnabled(true);
         setRole("HOST", 0xCC3A7255);
         setGroupChip(c);
         setStatus("Host ready • starting local hotspot…");
@@ -638,6 +663,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         }
         net.becomeClient(c);
         setTriggerEnabled(false);
+        setPhotoSyncEnabled(false);
         setRole("CLIENT", 0xCC3C5F86);
         setGroupChip(c);
         InetAddress gw = net.gatewayAddress();
@@ -652,6 +678,14 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         net.sendCapture(seq, target);
         scheduleCapture(seq, target, "HOST");
         setStatus("Capture #" + seq + " armed on all devices");
+    }
+
+    private void syncPhotosToHost() {
+        if (net == null || !net.host) {
+            Toast.makeText(this, "Photo sync is controlled by the host", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        net.requestPhotoSync();
     }
 
     private void scheduleCapture(int seq, long target, String source) {
@@ -706,7 +740,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private String saveJpeg(byte[] data, int seq) {
         try {
             String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
-            String name = "SyncCam_" + stamp + "_S" + seq + ".jpg";
+            String name = "SyncCam_" + stamp + "_S" + seq + "_" + deviceId + ".jpg";
             ContentValues v = new ContentValues();
             v.put(MediaStore.Images.Media.DISPLAY_NAME, name);
             v.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
@@ -717,7 +751,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             try (OutputStream o = getContentResolver().openOutputStream(u)) {
                 o.write(data);
             }
-            return u.toString();
+            String uri = u.toString();
+            if (photoTransfer != null) photoTransfer.recordLocal(seq, name, uri);
+            return uri;
         } catch (Exception e) {
             setStatus("Save failed • " + e.getMessage());
             return "";
@@ -729,6 +765,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         closeCamera();
         scheduler.shutdownNow();
         if (net != null) net.stop();
+        if (photoTransfer != null) photoTransfer.stop();
         try {
             if (hotspotReservation != null) hotspotReservation.close();
         } catch (Exception ignored) { }
@@ -750,7 +787,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         volatile long hostMinusClient = 0;
         volatile boolean running = true;
         int syncSeq = 1;
+        int photoRequestSeq = 1;
+        int activePhotoRequest = 0;
+        int expectedPhotoPeers = 0;
+        int receivedAtPhotoStart = 0;
         final Map<Integer, Boolean> captureSeen = new HashMap<>();
+        final Set<Integer> photoSyncSeen = new HashSet<>();
+        final Set<String> photoDonePeers = new HashSet<>();
 
         void start() {
             io.execute(() -> {
@@ -788,6 +831,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 peerSeen.clear();
                 peerAddress.clear();
             }
+            synchronized (photoDonePeers) { photoDonePeers.clear(); }
             setSync("HOST • local clock is reference");
             setPeers("0 connected clients");
         }
@@ -798,6 +842,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             hostAddr = null;
             samples.clear();
             captureSeen.clear();
+            synchronized (photoSyncSeen) { photoSyncSeen.clear(); }
             setSync("Searching for host…");
             setPeers("client mode");
         }
@@ -889,6 +934,31 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             send(limitedBroadcast, m);
         }
 
+        void requestPhotoSync() {
+            if (!host || photoTransfer == null) return;
+            Map<String, InetAddress> targets = new HashMap<>();
+            synchronized (peerSeen) {
+                targets.putAll(peerAddress);
+            }
+            if (targets.isEmpty()) {
+                setStatus("Photo sync • no connected client phones");
+                return;
+            }
+
+            int request = photoRequestSeq++;
+            activePhotoRequest = request;
+            expectedPhotoPeers = targets.size();
+            receivedAtPhotoStart = photoTransfer.totalReceived();
+            synchronized (photoDonePeers) { photoDonePeers.clear(); }
+
+            String message = "PHOTO_SYNC|" + groupCode + "|" + request;
+            for (InetAddress address : targets.values()) send(address, message);
+            io.schedule(() -> {
+                for (InetAddress address : targets.values()) send(address, message);
+            }, 120, TimeUnit.MILLISECONDS);
+            setStatus("Photo sync requested from " + targets.size() + " client phone(s)…");
+        }
+
         void report(int seq, long callNs, String uri) {
             if (!host && hostAddr != null)
                 send(hostAddr, "CAPTURED|" + groupCode + "|" + deviceId + "|" + seq + "|" + callNs);
@@ -931,6 +1001,24 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                         send(from, "SYNC_RESP|" + groupCode + "|" + p[2] + "|" + p[3] + "|" + p[4] + "|" + t2 + "|" + t3);
                     } else if ("CAPTURED".equals(p[0]) && p.length >= 3) {
                         rememberPeer(p[2], from);
+                    } else if ("PHOTO_SYNC_DONE".equals(p[0]) && p.length >= 5) {
+                        rememberPeer(p[2], from);
+                        int request = Integer.parseInt(p[3]);
+                        if (request == activePhotoRequest) {
+                            int done;
+                            synchronized (photoDonePeers) {
+                                photoDonePeers.add(p[2]);
+                                done = photoDonePeers.size();
+                            }
+                            if (done >= expectedPhotoPeers) {
+                                io.schedule(() -> {
+                                    int saved = Math.max(0, photoTransfer.totalReceived() - receivedAtPhotoStart);
+                                    setStatus("Photo sync complete • " + saved + " new client photo(s) stored on host");
+                                }, 600, TimeUnit.MILLISECONDS);
+                            } else {
+                                setStatus("Photo sync • " + done + "/" + expectedPhotoPeers + " client phones finished");
+                            }
+                        }
                     }
                 } else {
                     if ("BEACON".equals(p[0])) {
@@ -955,6 +1043,16 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                         long localTarget = hostTarget - hostMinusClient;
                         scheduleCapture(seq, localTarget, "CLIENT");
                         setStatus("Capture #" + seq + " received • shutter armed");
+                    } else if ("PHOTO_SYNC".equals(p[0]) && p.length >= 3) {
+                        int request = Integer.parseInt(p[2]);
+                        boolean first;
+                        synchronized (photoSyncSeen) { first = photoSyncSeen.add(request); }
+                        if (first) {
+                            hostAddr = from;
+                            setStatus("Host requested photos • uploading local captures…");
+                            photoTransfer.sendAllAsync(from, groupCode, request, (requestId, sentCount) ->
+                                    send(from, "PHOTO_SYNC_DONE|" + groupCode + "|" + deviceId + "|" + requestId + "|" + sentCount));
+                        }
                     }
                 }
             } catch (Exception ignored) { }
