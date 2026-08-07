@@ -37,6 +37,7 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -81,6 +82,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private TextView status, sync, peers, roleChip, groupChip, countdownBadge, trigger;
     private TextView syncValue, peerValue, hotspotInfo, photoSync;
     private EditText code;
+    private LinearLayout deviceSyncSection, deviceSyncList;
+    private HorizontalScrollView deviceSyncScroller;
+    private final Map<String, TextView> deviceSyncStatusViews = new HashMap<>();
+    private final Set<String> renderedDeviceIds = new HashSet<>();
     private View flashOverlay;
     private Camera camera;
     private int cameraId = 0;
@@ -109,6 +114,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             }
 
             @Override public void onPhotoReceived(String remoteDeviceId, int sequence, String savedUri, int totalReceived) {
+                setDeviceSyncState(remoteDeviceId, "SAVED #" + sequence, GREEN);
                 setStatus("Host saved photo from " + remoteDeviceId + " • capture #" + sequence + " • total received " + totalReceived);
             }
 
@@ -255,6 +261,24 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         hotspotInfo.setOnClickListener(v -> openWifiSettings());
         deck.addView(hotspotInfo);
 
+        deviceSyncSection = new LinearLayout(this);
+        deviceSyncSection.setOrientation(LinearLayout.VERTICAL);
+        deviceSyncSection.setPadding(0, dp(5), 0, 0);
+        deviceSyncSection.setVisibility(View.GONE);
+
+        TextView deviceSyncHeader = label("PHOTO SYNC BY DEVICE", 9, MUTED, Typeface.BOLD);
+        deviceSyncHeader.setLetterSpacing(0.10f);
+        deviceSyncSection.addView(deviceSyncHeader);
+
+        deviceSyncScroller = new HorizontalScrollView(this);
+        deviceSyncScroller.setHorizontalScrollBarEnabled(false);
+        deviceSyncList = new LinearLayout(this);
+        deviceSyncList.setOrientation(LinearLayout.HORIZONTAL);
+        deviceSyncList.setPadding(0, dp(4), 0, dp(2));
+        deviceSyncScroller.addView(deviceSyncList, new HorizontalScrollView.LayoutParams(-2, dp(62)));
+        deviceSyncSection.addView(deviceSyncScroller, new LinearLayout.LayoutParams(-1, dp(66)));
+        deck.addView(deviceSyncSection);
+
         LinearLayout shutterRow = new LinearLayout(this);
         shutterRow.setGravity(Gravity.CENTER);
         shutterRow.setPadding(0, dp(8), 0, dp(4));
@@ -289,14 +313,14 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         FrameLayout.LayoutParams trigLp = new FrameLayout.LayoutParams(dp(80), dp(80), Gravity.CENTER);
         shutterWrap.addView(trigger, trigLp);
 
-        photoSync = smallButton("SYNC\nPHOTOS");
+        photoSync = smallButton("SYNC\nALL");
         photoSync.setGravity(Gravity.CENTER);
         photoSync.setEnabled(false);
         photoSync.setAlpha(0.42f);
         shutterRow.addView(photoSync, new LinearLayout.LayoutParams(dp(70), dp(60)));
         deck.addView(shutterRow);
 
-        TextView footer = label("CAPTURE ALL synchronizes shutters  •  SYNC PHOTOS copies client JPEGs to the host phone", 9, 0xFF8D96A3, Typeface.NORMAL);
+        TextView footer = label("Tap a device to sync only that phone • SYNC ALL pulls new JPEGs from every client", 9, 0xFF8D96A3, Typeface.NORMAL);
         footer.setGravity(Gravity.CENTER);
         deck.addView(footer);
 
@@ -460,6 +484,70 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         });
     }
 
+    private void refreshDeviceSyncList(Map<String, InetAddress> snapshot) {
+        final Map<String, InetAddress> peersNow = new HashMap<>(snapshot);
+        ui(() -> {
+            if (deviceSyncSection == null || deviceSyncList == null) return;
+            boolean visible = net != null && net.host && !peersNow.isEmpty();
+            deviceSyncSection.setVisibility(visible ? View.VISIBLE : View.GONE);
+            if (!visible) {
+                deviceSyncList.removeAllViews();
+                deviceSyncStatusViews.clear();
+                renderedDeviceIds.clear();
+                return;
+            }
+
+            Set<String> ids = new HashSet<>(peersNow.keySet());
+            if (ids.equals(renderedDeviceIds)) return;
+            renderedDeviceIds.clear();
+            renderedDeviceIds.addAll(ids);
+            deviceSyncList.removeAllViews();
+            deviceSyncStatusViews.clear();
+
+            ArrayList<String> ordered = new ArrayList<>(ids);
+            ordered.sort(String::compareTo);
+            for (String id : ordered) {
+                InetAddress address = peersNow.get(id);
+                LinearLayout card = new LinearLayout(this);
+                card.setOrientation(LinearLayout.VERTICAL);
+                card.setGravity(Gravity.CENTER);
+                card.setPadding(dp(10), dp(6), dp(10), dp(6));
+                card.setBackground(roundRect(BG_CARD, 12, 1, 0xFF454C58));
+
+                TextView device = label(id, 10, Color.WHITE, Typeface.BOLD);
+                device.setGravity(Gravity.CENTER);
+                TextView ip = label(address == null ? "" : address.getHostAddress(), 8, MUTED, Typeface.NORMAL);
+                ip.setGravity(Gravity.CENTER);
+                TextView action = label("SYNC", 10, GREEN, Typeface.BOLD);
+                action.setGravity(Gravity.CENTER);
+                action.setPadding(0, dp(2), 0, 0);
+                card.addView(device);
+                card.addView(ip);
+                card.addView(action);
+                deviceSyncStatusViews.put(id, action);
+
+                card.setOnClickListener(v -> {
+                    setDeviceSyncState(id, "REQUESTED", AMBER);
+                    if (net != null) net.requestPhotoSyncFor(id);
+                });
+
+                LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(dp(116), dp(58));
+                cp.rightMargin = dp(6);
+                deviceSyncList.addView(card, cp);
+            }
+        });
+    }
+
+    private void setDeviceSyncState(String id, String state, int color) {
+        ui(() -> {
+            TextView v = deviceSyncStatusViews.get(id);
+            if (v != null) {
+                v.setText(state);
+                v.setTextColor(color);
+            }
+        });
+    }
+
     private void openWifiSettings() {
         try {
             if (Build.VERSION.SDK_INT >= 29) startActivity(new Intent(Settings.Panel.ACTION_WIFI));
@@ -572,6 +660,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         setPhotoSyncEnabled(true);
         setRole("HOST", 0xCC3A7255);
         setGroupChip(c);
+        refreshDeviceSyncList(new HashMap<>());
         setStatus("Host ready • starting local hotspot…");
         startLocalHotspot();
     }
@@ -666,6 +755,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         setPhotoSyncEnabled(false);
         setRole("CLIENT", 0xCC3C5F86);
         setGroupChip(c);
+        refreshDeviceSyncList(new HashMap<>());
         InetAddress gw = net.gatewayAddress();
         if (gw == null) setStatus("Client searching • connect to host hotspot/Wi-Fi if needed");
         else setStatus("Client searching host at gateway " + gw.getHostAddress());
@@ -794,6 +884,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         final Map<Integer, Boolean> captureSeen = new HashMap<>();
         final Set<Integer> photoSyncSeen = new HashSet<>();
         final Set<String> photoDonePeers = new HashSet<>();
+        final Map<Integer, String> individualPhotoRequests = new HashMap<>();
 
         void start() {
             io.execute(() -> {
@@ -901,6 +992,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                             peerAddress.remove(id);
                         }
                         setPeers(peerSeen.size() + " connected clients");
+                        refreshDeviceSyncList(new HashMap<>(peerAddress));
                     }
                 } else if (hostAddr == null) {
                     String discover = "DISCOVER|" + groupCode + "|" + deviceId;
@@ -952,11 +1044,32 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             synchronized (photoDonePeers) { photoDonePeers.clear(); }
 
             String message = "PHOTO_SYNC|" + groupCode + "|" + request;
-            for (InetAddress address : targets.values()) send(address, message);
+            for (Map.Entry<String, InetAddress> e : targets.entrySet()) {
+                setDeviceSyncState(e.getKey(), "REQUESTED", AMBER);
+                send(e.getValue(), message);
+            }
             io.schedule(() -> {
                 for (InetAddress address : targets.values()) send(address, message);
             }, 120, TimeUnit.MILLISECONDS);
             setStatus("Photo sync requested from " + targets.size() + " client phone(s)…");
+        }
+
+        void requestPhotoSyncFor(String targetId) {
+            if (!host || photoTransfer == null || targetId == null) return;
+            InetAddress address;
+            synchronized (peerSeen) { address = peerAddress.get(targetId); }
+            if (address == null) {
+                setDeviceSyncState(targetId, "OFFLINE", AMBER);
+                setStatus("Photo sync • device " + targetId + " is no longer connected");
+                return;
+            }
+            int request = photoRequestSeq++;
+            synchronized (individualPhotoRequests) { individualPhotoRequests.put(request, targetId); }
+            String message = "PHOTO_SYNC|" + groupCode + "|" + request;
+            send(address, message);
+            io.schedule(() -> send(address, message), 120, TimeUnit.MILLISECONDS);
+            setDeviceSyncState(targetId, "UPLOADING…", AMBER);
+            setStatus("Photo sync requested from device " + targetId + "…");
         }
 
         void report(int seq, long callNs, String uri) {
@@ -1004,7 +1117,14 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     } else if ("PHOTO_SYNC_DONE".equals(p[0]) && p.length >= 5) {
                         rememberPeer(p[2], from);
                         int request = Integer.parseInt(p[3]);
-                        if (request == activePhotoRequest) {
+                        String individualTarget;
+                        synchronized (individualPhotoRequests) { individualTarget = individualPhotoRequests.remove(request); }
+                        int sentCount = Integer.parseInt(p[4]);
+                        if (individualTarget != null) {
+                            setDeviceSyncState(p[2], sentCount == 0 ? "UP TO DATE" : "DONE • " + sentCount, GREEN);
+                            setStatus("Device " + p[2] + " photo sync complete • " + sentCount + " new photo(s)");
+                        } else if (request == activePhotoRequest) {
+                            setDeviceSyncState(p[2], sentCount == 0 ? "UP TO DATE" : "DONE • " + sentCount, GREEN);
                             int done;
                             synchronized (photoDonePeers) {
                                 photoDonePeers.add(p[2]);

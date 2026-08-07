@@ -61,6 +61,7 @@ final class PhotoTransfer {
     private final ExecutorService io = Executors.newCachedThreadPool();
     private final Map<Integer, PhotoRecord> localPhotos = new LinkedHashMap<>();
     private final Set<String> receivedKeys = new HashSet<>();
+    private final Set<String> sentKeys = new HashSet<>();
 
     private volatile boolean running = true;
     private ServerSocket server;
@@ -91,14 +92,20 @@ final class PhotoTransfer {
     void sendAllAsync(InetAddress hostAddress, String groupCode, int requestId, SendComplete complete) {
         io.execute(() -> {
             int sent = 0;
-            List<PhotoRecord> snapshot;
+            List<PhotoRecord> snapshot = new ArrayList<>();
+            String prefix = groupCode + "|" + hostAddress.getHostAddress() + "|";
             synchronized (PhotoTransfer.this) {
-                snapshot = new ArrayList<>(localPhotos.values());
+                for (PhotoRecord r : localPhotos.values()) {
+                    if (!sentKeys.contains(prefix + r.sequence)) snapshot.add(r);
+                }
             }
-            listener.onTransferStatus("Uploading " + snapshot.size() + " photo(s) to host…");
+            listener.onTransferStatus("Uploading " + snapshot.size() + " new photo(s) to host…");
             for (PhotoRecord r : snapshot) {
                 if (!running) break;
-                if (sendOne(hostAddress, groupCode, requestId, r)) sent++;
+                if (sendOne(hostAddress, groupCode, requestId, r)) {
+                    sent++;
+                    synchronized (PhotoTransfer.this) { sentKeys.add(prefix + r.sequence); }
+                }
             }
             listener.onTransferStatus("Photo upload complete • " + sent + " sent");
             if (complete != null) complete.done(requestId, sent);

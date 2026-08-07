@@ -1,0 +1,93 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.openai.synccam"
+4    android:versionCode="5"
+5    android:versionName="5.0.0-device-sync" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="26"
+9        android:targetSdkVersion="35" />
+10
+11    <uses-feature
+11-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:3:5-88
+12        android:name="android.hardware.camera.any"
+12-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:3:19-61
+13        android:required="true" />
+13-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:3:62-85
+14
+15    <uses-permission android:name="android.permission.CAMERA" />
+15-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:5:5-65
+15-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:5:22-62
+16    <uses-permission android:name="android.permission.INTERNET" />
+16-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:6:5-67
+16-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:6:22-64
+17    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+17-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:7:5-79
+17-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:7:22-76
+18    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+18-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:8:5-76
+18-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:8:22-73
+19    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+19-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:9:5-76
+19-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:9:22-73
+20    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+20-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:10:5-86
+20-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:10:22-83
+21    <uses-permission android:name="android.permission.WAKE_LOCK" />
+21-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:11:5-68
+21-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:11:22-65
+22    <uses-permission
+22-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:12:5-108
+23        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+23-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:12:22-78
+24        android:maxSdkVersion="28" />
+24-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:12:79-105
+25    <uses-permission
+25-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:13:5-106
+26        android:name="android.permission.ACCESS_FINE_LOCATION"
+26-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:13:22-76
+27        android:maxSdkVersion="32" />
+27-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:13:77-103
+28    <uses-permission
+28-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:14:5-125
+29        android:name="android.permission.NEARBY_WIFI_DEVICES"
+29-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:14:22-75
+30        android:usesPermissionFlags="neverForLocation" />
+30-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:14:76-122
+31
+32    <application
+32-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:16:5-31:19
+33        android:allowBackup="true"
+33-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:17:9-35
+34        android:debuggable="true"
+35        android:extractNativeLibs="false"
+36        android:label="SyncCam"
+36-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:18:9-32
+37        android:supportsRtl="true"
+37-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:19:9-35
+38        android:theme="@android:style/Theme.Material.NoActionBar" >
+38-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:20:9-66
+39        <activity
+39-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:21:9-30:20
+40            android:name="com.openai.synccam.MainActivity"
+40-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:22:13-41
+41            android:configChanges="orientation|screenSize"
+41-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:24:13-59
+42            android:exported="true"
+42-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:25:13-36
+43            android:screenOrientation="portrait" >
+43-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:23:13-49
+44            <intent-filter>
+44-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:26:13-29:29
+45                <action android:name="android.intent.action.MAIN" />
+45-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:27:17-69
+45-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:27:25-66
+46
+47                <category android:name="android.intent.category.LAUNCHER" />
+47-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:28:17-77
+47-->/home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/AndroidManifest.xml:28:27-74
+48            </intent-filter>
+49        </activity>
+50    </application>
+51
+52</manifest>

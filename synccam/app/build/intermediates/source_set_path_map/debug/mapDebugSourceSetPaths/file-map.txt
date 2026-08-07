@@ -1,0 +1,7 @@
+com.openai.synccam.app-pngs-0 /home/runner/work/DOKIMOS/DOKIMOS/synccam/app/build/generated/res/pngs/debug
+com.openai.synccam.app-resValues-1 /home/runner/work/DOKIMOS/DOKIMOS/synccam/app/build/generated/res/resValues/debug
+com.openai.synccam.app-packageDebugResources-2 /home/runner/work/DOKIMOS/DOKIMOS/synccam/app/build/intermediates/incremental/debug/packageDebugResources/merged.dir
+com.openai.synccam.app-packageDebugResources-3 /home/runner/work/DOKIMOS/DOKIMOS/synccam/app/build/intermediates/incremental/debug/packageDebugResources/stripped.dir
+com.openai.synccam.app-debug-4 /home/runner/work/DOKIMOS/DOKIMOS/synccam/app/build/intermediates/merged_res/debug/mergeDebugResources
+com.openai.synccam.app-debug-5 /home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/debug/res
+com.openai.synccam.app-main-6 /home/runner/work/DOKIMOS/DOKIMOS/synccam/app/src/main/res
