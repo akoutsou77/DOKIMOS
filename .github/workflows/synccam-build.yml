@@ -3,9 +3,6 @@ name: Build SyncCam APK
 on:
   push:
     branches:
-      - agent/synccam-apk-build
-  pull_request:
-    branches:
       - main
   workflow_dispatch:
 
@@ -35,20 +32,19 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SyncCam-debug-apk
+          name: SyncCam-v4.0.0-apk
           path: synccam/app/build/outputs/apk/debug/app-debug.apk
-      - name: Publish SyncCam v3.0.0 release
+      - name: Publish SyncCam v4.0.0 release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v3.0.0.apk
-          if gh release view v3.0.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload v3.0.0 /tmp/SyncCam-v3.0.0.apk --clobber --repo "$GITHUB_REPOSITORY"
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v4.0.0.apk
+          if gh release view v4.0.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v4.0.0 /tmp/SyncCam-v4.0.0.apk --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create v3.0.0 /tmp/SyncCam-v3.0.0.apk \
+            gh release create v4.0.0 /tmp/SyncCam-v4.0.0.apk \
               --repo "$GITHUB_REPOSITORY" \
-              --target "$RELEASE_SHA" \
-              --title "SyncCam v3.0.0" \
-              --notes "Working SyncCam Android release. Supports two or more phones on the same local Wi-Fi or Android phone hotspot, direct host/client discovery, clock synchronisation, synchronized future-trigger capture, and the polished camera control interface."
+              --target "$GITHUB_SHA" \
+              --title "SyncCam v4.0.0" \
+              --notes "Adds host-side photo collection. After synchronized capture, the HOST can press SYNC PHOTOS to request all client JPEGs. Photos are transferred directly over the local Wi-Fi/hotspot using a TCP photo channel and stored in Pictures/SyncCam on the host phone. Existing capture synchronization and direct hotspot networking are preserved."
           fi
