@@ -52,3 +52,16 @@ jobs:
               --title "SyncCam v5.0.0" \
               --notes "Per-device host photo sync. The host lists each connected client with an individual SYNC control, plus SYNC ALL. Client uploads are incremental within the app session so already transferred JPEGs are not resent. Photos are stored in Pictures/SyncCam on the host."
           fi
+      - name: Repair v5 release from validated main source
+        if: github.event_name == 'pull_request' && github.head_ref == 'agent/synccam-apk-build'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAIN_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v5.0.0.apk
+          gh release delete v5.0.0 --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create v5.0.0 /tmp/SyncCam-v5.0.0.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$MAIN_SHA" \
+            --title "SyncCam v5.0.0" \
+            --notes "Per-device host photo sync. The host lists each connected client with an individual SYNC control, plus SYNC ALL. Client uploads are incremental within the app session so already transferred JPEGs are not resent. Photos are stored in Pictures/SyncCam on the host."
