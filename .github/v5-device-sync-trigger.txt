@@ -1,0 +1,1 @@
+Trigger per-device photo sync validation on existing CI branch.
