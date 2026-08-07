@@ -107,6 +107,7 @@ final class PhotoTransfer {
 
     private boolean sendOne(InetAddress hostAddress, String groupCode, int requestId, PhotoRecord r) {
         Socket s = new Socket();
+        InputStream rawIn = null;
         try {
             s.connect(new InetSocketAddress(hostAddress, PHOTO_PORT), 5000);
             s.setSoTimeout(15000);
@@ -119,8 +120,10 @@ final class PhotoTransfer {
             out.writeUTF(r.name == null ? "" : r.name);
             out.flush();
 
-            try (InputStream in = new BufferedInputStream(context.getContentResolver().openInputStream(Uri.parse(r.uri)))) {
-                if (in == null) return false;
+            rawIn = context.getContentResolver().openInputStream(Uri.parse(r.uri));
+            if (rawIn == null) return false;
+            try (InputStream in = new BufferedInputStream(rawIn)) {
+                rawIn = null;
                 byte[] buf = new byte[64 * 1024];
                 int n;
                 while ((n = in.read(buf)) >= 0) {
@@ -134,6 +137,7 @@ final class PhotoTransfer {
             listener.onTransferStatus("Photo upload failed • " + e.getMessage());
             return false;
         } finally {
+            try { if (rawIn != null) rawIn.close(); } catch (Exception ignored) { }
             try { s.close(); } catch (Exception ignored) { }
         }
     }
@@ -195,6 +199,7 @@ final class PhotoTransfer {
     }
 
     private String saveIncoming(InputStream in, String remoteId, int sequence) {
+        OutputStream rawOut = null;
         try {
             String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
             String safeId = remoteId == null ? "REMOTE" : remoteId.replaceAll("[^A-Za-z0-9_-]", "");
@@ -209,8 +214,10 @@ final class PhotoTransfer {
             Uri u = context.getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
             if (u == null) return "";
 
-            try (OutputStream out = new BufferedOutputStream(context.getContentResolver().openOutputStream(u))) {
-                if (out == null) return "";
+            rawOut = context.getContentResolver().openOutputStream(u);
+            if (rawOut == null) return "";
+            try (OutputStream out = new BufferedOutputStream(rawOut)) {
+                rawOut = null;
                 byte[] buf = new byte[64 * 1024];
                 int n;
                 while ((n = in.read(buf)) >= 0) {
@@ -222,6 +229,8 @@ final class PhotoTransfer {
         } catch (Exception e) {
             listener.onTransferStatus("Host save failed • " + e.getMessage());
             return "";
+        } finally {
+            try { if (rawOut != null) rawOut.close(); } catch (Exception ignored) { }
         }
     }
 
