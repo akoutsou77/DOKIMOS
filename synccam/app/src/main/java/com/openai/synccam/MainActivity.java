@@ -2,6 +2,7 @@ package com.openai.synccam;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ContentValues;
@@ -35,10 +36,15 @@ import android.view.SurfaceView;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
+import android.widget.ArrayAdapter;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.SeekBar;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -62,6 +68,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 @SuppressWarnings("deprecation")
@@ -80,7 +87,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     private SurfaceView surface;
     private TextView status, sync, peers, roleChip, groupChip, countdownBadge, trigger;
-    private TextView syncValue, peerValue, hotspotInfo, photoSync;
+    private TextView syncValue, peerValue, hotspotInfo, photoSync, autoCaptureButton, cameraSettingsButton;
     private EditText code;
     private LinearLayout deviceSyncSection, deviceSyncList;
     private HorizontalScrollView deviceSyncScroller;
@@ -94,6 +101,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private PhotoTransfer photoTransfer;
     private final String deviceId = UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.US);
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private final ScheduledExecutorService autoScheduler = Executors.newSingleThreadScheduledExecutor();
+    private ScheduledFuture<?> autoCaptureFuture;
+    private volatile boolean autoCaptureRunning = false;
+    private volatile long autoCaptureIntervalMs = 10_000L;
+    private volatile boolean captureInProgress = false;
+    private final Map<Integer, String> cameraParameterProfiles = new HashMap<>();
     private int sequence = 1;
     private volatile int activeCountdownSeq = -1;
 
@@ -320,7 +333,17 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         shutterRow.addView(photoSync, new LinearLayout.LayoutParams(dp(70), dp(60)));
         deck.addView(shutterRow);
 
-        TextView footer = label("Tap a device to sync only that phone • SYNC ALL pulls new JPEGs from every client", 9, 0xFF8D96A3, Typeface.NORMAL);
+        LinearLayout automationRow = new LinearLayout(this);
+        automationRow.setPadding(0, dp(4), 0, dp(4));
+        autoCaptureButton = actionButton("AUTO CAPTURE  •  OFF", 0xFF343B46, Color.WHITE);
+        autoCaptureButton.setEnabled(false);
+        autoCaptureButton.setAlpha(0.42f);
+        cameraSettingsButton = actionButton("CAMERA SETTINGS", 0xFF343B46, Color.WHITE);
+        automationRow.addView(autoCaptureButton, weightedButton(1f, 0, dp(5)));
+        automationRow.addView(cameraSettingsButton, weightedButton(1f, dp(5), 0));
+        deck.addView(automationRow);
+
+        TextView footer = label("Per-device photo sync • host interval capture • camera controls adapt to this phone", 9, 0xFF8D96A3, Typeface.NORMAL);
         footer.setGravity(Gravity.CENTER);
         deck.addView(footer);
 
@@ -343,6 +366,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         trigger.setOnClickListener(v -> triggerAll());
         flip.setOnClickListener(v -> flip());
         photoSync.setOnClickListener(v -> syncPhotosToHost());
+        autoCaptureButton.setOnClickListener(v -> toggleAutoCapture());
+        cameraSettingsButton.setOnClickListener(v -> showCameraSettings());
         copy.setOnClickListener(v -> copyConnectionInfo());
     }
 
@@ -484,6 +509,306 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         });
     }
 
+    private void setAutoCaptureEnabled(boolean enabled) {
+        ui(() -> {
+            autoCaptureButton.setEnabled(enabled);
+            autoCaptureButton.setAlpha(enabled ? 1f : 0.42f);
+        });
+    }
+
+    private String formatInterval(long ms) {
+        if (ms % 1000L == 0) return (ms / 1000L) + "s";
+        return String.format(Locale.US, "%.1fs", ms / 1000.0);
+    }
+
+    private void toggleAutoCapture() {
+        if (net == null || !net.host) {
+            Toast.makeText(this, "Automatic capture is controlled by the host", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (autoCaptureRunning) {
+            stopAutoCapture("Automatic capture stopped");
+            return;
+        }
+        showAutoCaptureDialog();
+    }
+
+    private void showAutoCaptureDialog() {
+        EditText seconds = new EditText(this);
+        seconds.setSingleLine(true);
+        seconds.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        seconds.setText(String.format(Locale.US, "%.1f", autoCaptureIntervalMs / 1000.0));
+        seconds.setSelectAllOnFocus(true);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(22), dp(8), dp(22), 0);
+        TextView help = label("Interval in seconds. Minimum 4.0 s. The host generates every synchronized trigger.", 12, MUTED, Typeface.NORMAL);
+        help.setPadding(0, 0, 0, dp(8));
+        box.addView(help);
+        box.addView(seconds, new LinearLayout.LayoutParams(-1, dp(52)));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Automatic synchronized capture")
+                .setView(box)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Start", null)
+                .create();
+        dialog.setOnShowListener(v -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(btn -> {
+            try {
+                double sec = Double.parseDouble(seconds.getText().toString().trim());
+                if (sec < 4.0) {
+                    seconds.setError("Minimum interval is 4.0 seconds");
+                    return;
+                }
+                startAutoCapture(Math.round(sec * 1000.0));
+                dialog.dismiss();
+            } catch (Exception e) {
+                seconds.setError("Enter a valid interval");
+            }
+        }));
+        dialog.show();
+    }
+
+    private synchronized void startAutoCapture(long intervalMs) {
+        stopAutoCapture(null);
+        autoCaptureIntervalMs = intervalMs;
+        autoCaptureRunning = true;
+        ui(() -> {
+            autoCaptureButton.setText("AUTO CAPTURE  •  " + formatInterval(intervalMs));
+            autoCaptureButton.setTextColor(GREEN);
+        });
+        autoCaptureFuture = autoScheduler.scheduleAtFixedRate(() -> {
+            if (!autoCaptureRunning) return;
+            ui(() -> {
+                if (autoCaptureRunning && net != null && net.host) triggerAll();
+            });
+        }, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
+        setStatus("Automatic capture armed • every " + formatInterval(intervalMs));
+    }
+
+    private synchronized void stopAutoCapture(String message) {
+        autoCaptureRunning = false;
+        if (autoCaptureFuture != null) {
+            autoCaptureFuture.cancel(false);
+            autoCaptureFuture = null;
+        }
+        ui(() -> {
+            if (autoCaptureButton != null) {
+                autoCaptureButton.setText("AUTO CAPTURE  •  OFF");
+                autoCaptureButton.setTextColor(Color.WHITE);
+            }
+        });
+        if (message != null) setStatus(message);
+    }
+
+    private TextView cameraSettingLabel(String text) {
+        TextView v = label(text, 11, MUTED, Typeface.BOLD);
+        v.setPadding(0, dp(9), 0, dp(3));
+        return v;
+    }
+
+    private Spinner cameraSpinner(List<String> values, String current) {
+        Spinner spinner = new Spinner(this);
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, values);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinner.setAdapter(adapter);
+        int selected = values.indexOf(current);
+        if (selected >= 0) spinner.setSelection(selected);
+        return spinner;
+    }
+
+    private synchronized void showCameraSettings() {
+        if (camera == null) {
+            Toast.makeText(this, "Camera is not ready", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        final Camera.Parameters current;
+        try { current = camera.getParameters(); }
+        catch (Exception e) {
+            setStatus("Cannot read camera settings • " + e.getMessage());
+            return;
+        }
+
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(22), dp(8), dp(22), dp(12));
+        scroll.addView(box);
+
+        final Spinner[] resolution = new Spinner[1];
+        final List<Camera.Size> pictureSizes = current.getSupportedPictureSizes();
+        if (pictureSizes != null && !pictureSizes.isEmpty()) {
+            ArrayList<String> labels = new ArrayList<>();
+            String selected = "";
+            Camera.Size now = current.getPictureSize();
+            for (Camera.Size size : pictureSizes) {
+                String label = size.width + " × " + size.height;
+                labels.add(label);
+                if (now != null && size.width == now.width && size.height == now.height) selected = label;
+            }
+            box.addView(cameraSettingLabel("PHOTO RESOLUTION"));
+            resolution[0] = cameraSpinner(labels, selected);
+            box.addView(resolution[0]);
+        }
+
+        final Spinner[] flash = new Spinner[1];
+        List<String> flashModes = current.getSupportedFlashModes();
+        if (flashModes != null && !flashModes.isEmpty()) {
+            box.addView(cameraSettingLabel("FLASH"));
+            flash[0] = cameraSpinner(flashModes, current.getFlashMode());
+            box.addView(flash[0]);
+        }
+
+        final Spinner[] focus = new Spinner[1];
+        List<String> focusModes = current.getSupportedFocusModes();
+        if (focusModes != null && !focusModes.isEmpty()) {
+            box.addView(cameraSettingLabel("FOCUS MODE"));
+            focus[0] = cameraSpinner(focusModes, current.getFocusMode());
+            box.addView(focus[0]);
+        }
+
+        final Spinner[] whiteBalance = new Spinner[1];
+        List<String> wbModes = current.getSupportedWhiteBalance();
+        if (wbModes != null && !wbModes.isEmpty()) {
+            box.addView(cameraSettingLabel("WHITE BALANCE"));
+            whiteBalance[0] = cameraSpinner(wbModes, current.getWhiteBalance());
+            box.addView(whiteBalance[0]);
+        }
+
+        final Spinner[] scene = new Spinner[1];
+        List<String> sceneModes = current.getSupportedSceneModes();
+        if (sceneModes != null && !sceneModes.isEmpty()) {
+            box.addView(cameraSettingLabel("SCENE MODE"));
+            scene[0] = cameraSpinner(sceneModes, current.getSceneMode());
+            box.addView(scene[0]);
+        }
+
+        final SeekBar[] exposure = new SeekBar[1];
+        final TextView[] exposureValue = new TextView[1];
+        final int minEv = current.getMinExposureCompensation();
+        final int maxEv = current.getMaxExposureCompensation();
+        final float evStep = current.getExposureCompensationStep();
+        if (minEv != 0 || maxEv != 0) {
+            exposureValue[0] = label("", 11, Color.WHITE, Typeface.NORMAL);
+            box.addView(cameraSettingLabel("EXPOSURE COMPENSATION"));
+            box.addView(exposureValue[0]);
+            exposure[0] = new SeekBar(this);
+            exposure[0].setMax(maxEv - minEv);
+            exposure[0].setProgress(current.getExposureCompensation() - minEv);
+            Runnable updateExposure = () -> {
+                int index = exposure[0].getProgress() + minEv;
+                exposureValue[0].setText(String.format(Locale.US, "%+.2f EV", index * evStep));
+            };
+            updateExposure.run();
+            exposure[0].setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateExposure.run(); }
+                @Override public void onStartTrackingTouch(SeekBar seekBar) { }
+                @Override public void onStopTrackingTouch(SeekBar seekBar) { }
+            });
+            box.addView(exposure[0]);
+        }
+
+        final SeekBar[] zoom = new SeekBar[1];
+        final TextView[] zoomValue = new TextView[1];
+        if (current.isZoomSupported() && current.getMaxZoom() > 0) {
+            final List<Integer> ratios = current.getZoomRatios();
+            zoomValue[0] = label("", 11, Color.WHITE, Typeface.NORMAL);
+            box.addView(cameraSettingLabel("ZOOM"));
+            box.addView(zoomValue[0]);
+            zoom[0] = new SeekBar(this);
+            zoom[0].setMax(current.getMaxZoom());
+            zoom[0].setProgress(current.getZoom());
+            Runnable updateZoom = () -> {
+                int z = zoom[0].getProgress();
+                int ratio = ratios != null && z < ratios.size() ? ratios.get(z) : 100;
+                zoomValue[0].setText(String.format(Locale.US, "%.2f×", ratio / 100.0));
+            };
+            updateZoom.run();
+            zoom[0].setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateZoom.run(); }
+                @Override public void onStartTrackingTouch(SeekBar seekBar) { }
+                @Override public void onStopTrackingTouch(SeekBar seekBar) { }
+            });
+            box.addView(zoom[0]);
+        }
+
+        final SeekBar jpegQuality = new SeekBar(this);
+        final TextView jpegValue = label("", 11, Color.WHITE, Typeface.NORMAL);
+        box.addView(cameraSettingLabel("JPEG QUALITY"));
+        box.addView(jpegValue);
+        jpegQuality.setMax(99);
+        jpegQuality.setProgress(Math.max(0, Math.min(99, current.getJpegQuality() - 1)));
+        Runnable updateJpeg = () -> jpegValue.setText((jpegQuality.getProgress() + 1) + "%");
+        updateJpeg.run();
+        jpegQuality.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateJpeg.run(); }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) { }
+            @Override public void onStopTrackingTouch(SeekBar seekBar) { }
+        });
+        box.addView(jpegQuality);
+
+        final CheckBox aeLock = new CheckBox(this);
+        final boolean aeSupported = current.isAutoExposureLockSupported();
+        if (aeSupported) {
+            aeLock.setText("Lock auto exposure (AE)");
+            aeLock.setTextColor(Color.WHITE);
+            aeLock.setChecked(current.getAutoExposureLock());
+            box.addView(aeLock);
+        }
+
+        final CheckBox awbLock = new CheckBox(this);
+        final boolean awbSupported = current.isAutoWhiteBalanceLockSupported();
+        if (awbSupported) {
+            awbLock.setText("Lock auto white balance (AWB)");
+            awbLock.setTextColor(Color.WHITE);
+            awbLock.setChecked(current.getAutoWhiteBalanceLock());
+            box.addView(awbLock);
+        }
+
+        TextView note = label("Only controls reported by this camera are shown. Manual ISO/shutter speed require a Camera2 implementation on supported phones.", 10, MUTED, Typeface.NORMAL);
+        note.setPadding(0, dp(12), 0, 0);
+        box.addView(note);
+
+        new AlertDialog.Builder(this)
+                .setTitle("Camera settings • this phone")
+                .setView(scroll)
+                .setNegativeButton("Cancel", null)
+                .setNeutralButton("Defaults", (d, which) -> {
+                    cameraParameterProfiles.remove(cameraId);
+                    openCamera();
+                    setStatus("Camera settings reset for this camera");
+                })
+                .setPositiveButton("Apply", (d, which) -> {
+                    synchronized (MainActivity.this) {
+                        if (camera == null) return;
+                        try {
+                            Camera.Parameters p = camera.getParameters();
+                            if (resolution[0] != null && pictureSizes != null) {
+                                Camera.Size chosen = pictureSizes.get(resolution[0].getSelectedItemPosition());
+                                p.setPictureSize(chosen.width, chosen.height);
+                            }
+                            if (flash[0] != null) p.setFlashMode((String) flash[0].getSelectedItem());
+                            if (focus[0] != null) p.setFocusMode((String) focus[0].getSelectedItem());
+                            if (whiteBalance[0] != null) p.setWhiteBalance((String) whiteBalance[0].getSelectedItem());
+                            if (scene[0] != null) p.setSceneMode((String) scene[0].getSelectedItem());
+                            if (exposure[0] != null) p.setExposureCompensation(exposure[0].getProgress() + minEv);
+                            if (zoom[0] != null) p.setZoom(zoom[0].getProgress());
+                            p.setJpegQuality(jpegQuality.getProgress() + 1);
+                            if (aeSupported) p.setAutoExposureLock(aeLock.isChecked());
+                            if (awbSupported) p.setAutoWhiteBalanceLock(awbLock.isChecked());
+                            camera.setParameters(p);
+                            cameraParameterProfiles.put(cameraId, p.flatten());
+                            setStatus("Camera settings applied");
+                        } catch (Exception e) {
+                            setStatus("Camera rejected setting combination • " + e.getMessage());
+                        }
+                    }
+                })
+                .show();
+    }
+
     private void refreshDeviceSyncList(Map<String, InetAddress> snapshot) {
         final Map<String, InetAddress> peersNow = new HashMap<>(snapshot);
         ui(() -> {
@@ -618,11 +943,16 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         try {
             camera = Camera.open(cameraId);
             Camera.Parameters p = camera.getParameters();
-            List<String> modes = p.getSupportedFocusModes();
-            if (modes != null && modes.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE))
-                p.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
-            if (p.getSupportedFlashModes() != null && p.getSupportedFlashModes().contains(Camera.Parameters.FLASH_MODE_OFF))
-                p.setFlashMode(Camera.Parameters.FLASH_MODE_OFF);
+            String profile = cameraParameterProfiles.get(cameraId);
+            if (profile != null) {
+                try { p.unflatten(profile); } catch (Exception ignored) { }
+            } else {
+                List<String> modes = p.getSupportedFocusModes();
+                if (modes != null && modes.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE))
+                    p.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
+                if (p.getSupportedFlashModes() != null && p.getSupportedFlashModes().contains(Camera.Parameters.FLASH_MODE_OFF))
+                    p.setFlashMode(Camera.Parameters.FLASH_MODE_OFF);
+            }
             camera.setParameters(p);
             camera.setDisplayOrientation(90);
             camera.setPreviewDisplay(surface.getHolder());
@@ -658,6 +988,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         net.becomeHost(c);
         setTriggerEnabled(true);
         setPhotoSyncEnabled(true);
+        setAutoCaptureEnabled(true);
         setRole("HOST", 0xCC3A7255);
         setGroupChip(c);
         refreshDeviceSyncList(new HashMap<>());
@@ -750,9 +1081,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             Toast.makeText(this, "Enter the 6 digit host code", Toast.LENGTH_SHORT).show();
             return;
         }
+        stopAutoCapture(null);
         net.becomeClient(c);
         setTriggerEnabled(false);
         setPhotoSyncEnabled(false);
+        setAutoCaptureEnabled(false);
         setRole("CLIENT", 0xCC3C5F86);
         setGroupChip(c);
         refreshDeviceSyncList(new HashMap<>());
@@ -763,6 +1096,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     private void triggerAll() {
         if (net == null || !net.host) return;
+        if (captureInProgress) {
+            setStatus("Capture skipped • previous host photo still processing");
+            return;
+        }
         int seq = sequence++;
         long target = SystemClock.elapsedRealtimeNanos() + LEAD_NS;
         net.sendCapture(seq, target);
@@ -808,7 +1145,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     private synchronized void takePicture(int seq, String source) {
-        if (camera == null) return;
+        if (camera == null || captureInProgress) return;
+        captureInProgress = true;
         activeCountdownSeq = -1;
         flashOverlay.setAlpha(0.85f);
         flashOverlay.animate().alpha(0f).setDuration(260).start();
@@ -820,8 +1158,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 setStatus("Saved capture #" + seq + " • " + source.toLowerCase(Locale.US));
                 if (net != null) net.report(seq, callNs, uri);
                 try { c.startPreview(); } catch (Exception ignored) { }
+                captureInProgress = false;
             });
         } catch (Exception e) {
+            captureInProgress = false;
             setStatus("Capture failed • " + e.getMessage());
             try { camera.startPreview(); } catch (Exception ignored) { }
         }
@@ -852,8 +1192,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     @Override protected void onDestroy() {
         super.onDestroy();
+        stopAutoCapture(null);
         closeCamera();
         scheduler.shutdownNow();
+        autoScheduler.shutdownNow();
         if (net != null) net.stop();
         if (photoTransfer != null) photoTransfer.stop();
         try {
