@@ -8,8 +8,8 @@ android {
         applicationId 'com.openai.synccam'
         minSdk 26
         targetSdk 35
-        versionCode 5
-        versionName '5.0.0-device-sync'
+        versionCode 6
+        versionName '6.0.0-auto-camera'
     }
 
     buildTypes {
