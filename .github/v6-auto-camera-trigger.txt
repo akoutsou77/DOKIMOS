@@ -1,0 +1,1 @@
+Trigger SyncCam v6 automatic capture and capability-driven camera settings CI validation.
