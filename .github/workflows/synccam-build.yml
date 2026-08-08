@@ -52,3 +52,16 @@ jobs:
               --title "SyncCam v6.0.0" \
               --notes "Adds host-controlled automatic synchronized interval capture and a capability-driven local camera settings panel. Supported controls are queried per phone and can include resolution, flash, focus mode, white balance, scene mode, exposure compensation, zoom, JPEG quality, AE lock and AWB lock. Existing direct hotspot networking and per-device photo sync are preserved."
           fi
+      - name: Repair v6 release from validated main source
+        if: github.event_name == 'pull_request' && github.head_ref == 'agent/synccam-apk-build'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAIN_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v6.0.0.apk
+          gh release delete v6.0.0 --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create v6.0.0 /tmp/SyncCam-v6.0.0.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$MAIN_SHA" \
+            --title "SyncCam v6.0.0" \
+            --notes "Adds host-controlled automatic synchronized interval capture and a capability-driven local camera settings panel. Supported controls are queried per phone and can include resolution, flash, focus mode, white balance, scene mode, exposure compensation, zoom, JPEG quality, AE lock and AWB lock. Existing direct hotspot networking and per-device photo sync are preserved."
