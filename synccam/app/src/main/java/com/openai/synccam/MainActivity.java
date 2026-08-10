@@ -730,10 +730,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             p.add(Manifest.permission.CAMERA);
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED)
             p.add(Manifest.permission.NEARBY_WIFI_DEVICES);
-        if (checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED)
-            p.add(Manifest.permission.ACCESS_COARSE_LOCATION);
-        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
-            p.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        if (Build.VERSION.SDK_INT <= 32) {
+            if (checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+                p.add(Manifest.permission.ACCESS_COARSE_LOCATION);
+            if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+                p.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        }
         if (Build.VERSION.SDK_INT <= 28 && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
             p.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
         if (p.isEmpty()) startCore();
@@ -811,7 +813,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         int bullet = label.indexOf(" • ");
         if (bullet > 0) label = label.substring(0, bullet);
         final String shown = label.toUpperCase(Locale.US);
-        ui(() -> lensButton.setText("LENS\\n" + shown));
+        ui(() -> lensButton.setText("LENS\n" + shown));
     }
 
     private void hostAndHotspot() {
