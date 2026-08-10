@@ -33,25 +33,36 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Apply v7 Camera2 integration
+      - name: Polish v7 lens UI and GPS permission flow
         if: github.event_name == 'pull_request' && github.head_ref == 'agent/synccam-apk-build'
         working-directory: .
-        run: python tools/apply_v7_camera2.py
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('synccam/app/src/main/java/com/openai/synccam/MainActivity.java')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('lensButton.setText("LENS\\\\n" + shown)', 'lensButton.setText("LENS\\n" + shown)')
+          old = '''        if (checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED)\n            p.add(Manifest.permission.ACCESS_COARSE_LOCATION);\n        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)\n            p.add(Manifest.permission.ACCESS_FINE_LOCATION);'''
+          new = '''        if (Build.VERSION.SDK_INT <= 32) {\n            if (checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED)\n                p.add(Manifest.permission.ACCESS_COARSE_LOCATION);\n            if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)\n                p.add(Manifest.permission.ACCESS_FINE_LOCATION);\n        }'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
+          PY
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
-      - name: Commit validated v7 source to CI branch
+      - name: Commit v7 polish to CI branch
         if: github.event_name == 'pull_request' && github.head_ref == 'agent/synccam-apk-build'
         working-directory: .
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm -f tools/apply_v7_camera2.py .github/v7-camera2-trigger.txt
+          rm -f .github/v7-polish-trigger.txt
+          git add -u .github/v7-polish-trigger.txt || true
           git add synccam/app/src/main/java/com/openai/synccam/MainActivity.java
-          git add synccam/app/src/main/java/com/openai/synccam/Camera2Controller.java
-          git add synccam/app/src/main/java/com/openai/synccam/LocationExifHelper.java
-          git add synccam/app/src/main/AndroidManifest.xml synccam/app/build.gradle synccam/gradle.properties
-          git commit -m "SyncCam v7 Camera2 lenses and GPS EXIF"
-          git push origin HEAD:agent/synccam-apk-build
+          if ! git diff --cached --quiet; then
+            git commit -m "Polish SyncCam v7 lens and GPS UI"
+            git push origin HEAD:agent/synccam-apk-build
+          fi
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
