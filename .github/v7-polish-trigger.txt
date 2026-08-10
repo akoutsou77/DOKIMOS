@@ -1,0 +1,1 @@
+Validate final v7 lens UI and GPS permission flow.
