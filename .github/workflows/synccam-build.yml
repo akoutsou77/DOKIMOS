@@ -49,7 +49,7 @@ jobs:
           git add synccam/app/src/main/java/com/openai/synccam/MainActivity.java
           git add synccam/app/src/main/java/com/openai/synccam/Camera2Controller.java
           git add synccam/app/src/main/java/com/openai/synccam/LocationExifHelper.java
-          git add synccam/app/src/main/AndroidManifest.xml synccam/app/build.gradle
+          git add synccam/app/src/main/AndroidManifest.xml synccam/app/build.gradle synccam/gradle.properties
           git commit -m "SyncCam v7 Camera2 lenses and GPS EXIF"
           git push origin HEAD:agent/synccam-apk-build
       - name: Upload APK artifact
