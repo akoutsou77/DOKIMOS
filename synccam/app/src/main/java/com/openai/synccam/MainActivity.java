@@ -12,9 +12,9 @@ import android.content.pm.PackageManager;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.SurfaceTexture;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.hardware.Camera;
 import android.net.DhcpInfo;
 import android.net.Uri;
 import android.net.wifi.SoftApConfiguration;
@@ -33,6 +33,7 @@ import android.text.InputType;
 import android.view.Gravity;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.TextureView;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
@@ -72,7 +73,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 @SuppressWarnings("deprecation")
-public class MainActivity extends Activity implements SurfaceHolder.Callback {
+public class MainActivity extends Activity implements TextureView.SurfaceTextureListener {
     private static final int REQ = 42;
     private static final int PORT = 39393;
     private static final String GROUP = "239.255.77.77";
@@ -85,17 +86,18 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private static final int AMBER = 0xFFFFC65C;
     private static final int MUTED = 0xFFAEB6C2;
 
-    private SurfaceView surface;
+    private TextureView surface;
     private TextView status, sync, peers, roleChip, groupChip, countdownBadge, trigger;
-    private TextView syncValue, peerValue, hotspotInfo, photoSync, autoCaptureButton, cameraSettingsButton;
+    private TextView syncValue, peerValue, hotspotInfo, photoSync, autoCaptureButton, cameraSettingsButton, lensButton;
     private EditText code;
     private LinearLayout deviceSyncSection, deviceSyncList;
     private HorizontalScrollView deviceSyncScroller;
     private final Map<String, TextView> deviceSyncStatusViews = new HashMap<>();
     private final Set<String> renderedDeviceIds = new HashSet<>();
     private View flashOverlay;
-    private Camera camera;
-    private int cameraId = 0;
+    private Camera2Controller camera2;
+    private LocationExifHelper locationExif;
+    private volatile boolean storeGpsInJpeg = false;
     private boolean surfaceReady;
     private Net net;
     private PhotoTransfer photoTransfer;
@@ -106,7 +108,6 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private volatile boolean autoCaptureRunning = false;
     private volatile long autoCaptureIntervalMs = 10_000L;
     private volatile boolean captureInProgress = false;
-    private final Map<Integer, String> cameraParameterProfiles = new HashMap<>();
     private int sequence = 1;
     private volatile int activeCountdownSeq = -1;
 
@@ -143,8 +144,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
 
-        surface = new SurfaceView(this);
-        surface.getHolder().addCallback(this);
+        surface = new TextureView(this);
+        surface.setSurfaceTextureListener(this);
         root.addView(surface, new FrameLayout.LayoutParams(-1, -1));
 
         View shade = new View(this);
@@ -296,9 +297,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         shutterRow.setGravity(Gravity.CENTER);
         shutterRow.setPadding(0, dp(8), 0, dp(4));
 
-        TextView flip = smallButton("↻\nCAMERA");
-        flip.setGravity(Gravity.CENTER);
-        shutterRow.addView(flip, new LinearLayout.LayoutParams(dp(70), dp(60)));
+        lensButton = smallButton("LENS\nSELECT");
+        lensButton.setGravity(Gravity.CENTER);
+        shutterRow.addView(lensButton, new LinearLayout.LayoutParams(dp(70), dp(60)));
 
         FrameLayout shutterWrap = new FrameLayout(this);
         LinearLayout.LayoutParams swLp = new LinearLayout.LayoutParams(dp(104), dp(104));
@@ -364,7 +365,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         host.setOnClickListener(v -> hostAndHotspot());
         join.setOnClickListener(v -> join());
         trigger.setOnClickListener(v -> triggerAll());
-        flip.setOnClickListener(v -> flip());
+        lensButton.setOnClickListener(v -> showLensSelector());
         photoSync.setOnClickListener(v -> syncPhotosToHost());
         autoCaptureButton.setOnClickListener(v -> toggleAutoCapture());
         cameraSettingsButton.setOnClickListener(v -> showCameraSettings());
@@ -618,195 +619,20 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         return spinner;
     }
 
-    private synchronized void showCameraSettings() {
-        if (camera == null) {
-            Toast.makeText(this, "Camera is not ready", Toast.LENGTH_SHORT).show();
+    private void showCameraSettings() {
+        if (camera2 == null) {
+            Toast.makeText(this, "Camera2 is not ready", Toast.LENGTH_SHORT).show();
             return;
         }
-
-        final Camera.Parameters current;
-        try { current = camera.getParameters(); }
-        catch (Exception e) {
-            setStatus("Cannot read camera settings • " + e.getMessage());
-            return;
-        }
-
-        ScrollView scroll = new ScrollView(this);
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(22), dp(8), dp(22), dp(12));
-        scroll.addView(box);
-
-        final Spinner[] resolution = new Spinner[1];
-        final List<Camera.Size> pictureSizes = current.getSupportedPictureSizes();
-        if (pictureSizes != null && !pictureSizes.isEmpty()) {
-            ArrayList<String> labels = new ArrayList<>();
-            String selected = "";
-            Camera.Size now = current.getPictureSize();
-            for (Camera.Size size : pictureSizes) {
-                String label = size.width + " × " + size.height;
-                labels.add(label);
-                if (now != null && size.width == now.width && size.height == now.height) selected = label;
+        camera2.showSettingsDialog(this, storeGpsInJpeg, (gpsEnabled, summary) -> {
+            storeGpsInJpeg = gpsEnabled;
+            if (gpsEnabled && locationExif != null && !locationExif.hasPermission()) {
+                requestPermissions(new String[]{Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION}, REQ);
             }
-            box.addView(cameraSettingLabel("PHOTO RESOLUTION"));
-            resolution[0] = cameraSpinner(labels, selected);
-            box.addView(resolution[0]);
-        }
-
-        final Spinner[] flash = new Spinner[1];
-        List<String> flashModes = current.getSupportedFlashModes();
-        if (flashModes != null && !flashModes.isEmpty()) {
-            box.addView(cameraSettingLabel("FLASH"));
-            flash[0] = cameraSpinner(flashModes, current.getFlashMode());
-            box.addView(flash[0]);
-        }
-
-        final Spinner[] focus = new Spinner[1];
-        List<String> focusModes = current.getSupportedFocusModes();
-        if (focusModes != null && !focusModes.isEmpty()) {
-            box.addView(cameraSettingLabel("FOCUS MODE"));
-            focus[0] = cameraSpinner(focusModes, current.getFocusMode());
-            box.addView(focus[0]);
-        }
-
-        final Spinner[] whiteBalance = new Spinner[1];
-        List<String> wbModes = current.getSupportedWhiteBalance();
-        if (wbModes != null && !wbModes.isEmpty()) {
-            box.addView(cameraSettingLabel("WHITE BALANCE"));
-            whiteBalance[0] = cameraSpinner(wbModes, current.getWhiteBalance());
-            box.addView(whiteBalance[0]);
-        }
-
-        final Spinner[] scene = new Spinner[1];
-        List<String> sceneModes = current.getSupportedSceneModes();
-        if (sceneModes != null && !sceneModes.isEmpty()) {
-            box.addView(cameraSettingLabel("SCENE MODE"));
-            scene[0] = cameraSpinner(sceneModes, current.getSceneMode());
-            box.addView(scene[0]);
-        }
-
-        final SeekBar[] exposure = new SeekBar[1];
-        final TextView[] exposureValue = new TextView[1];
-        final int minEv = current.getMinExposureCompensation();
-        final int maxEv = current.getMaxExposureCompensation();
-        final float evStep = current.getExposureCompensationStep();
-        if (minEv != 0 || maxEv != 0) {
-            exposureValue[0] = label("", 11, Color.WHITE, Typeface.NORMAL);
-            box.addView(cameraSettingLabel("EXPOSURE COMPENSATION"));
-            box.addView(exposureValue[0]);
-            exposure[0] = new SeekBar(this);
-            exposure[0].setMax(maxEv - minEv);
-            exposure[0].setProgress(current.getExposureCompensation() - minEv);
-            Runnable updateExposure = () -> {
-                int index = exposure[0].getProgress() + minEv;
-                exposureValue[0].setText(String.format(Locale.US, "%+.2f EV", index * evStep));
-            };
-            updateExposure.run();
-            exposure[0].setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateExposure.run(); }
-                @Override public void onStartTrackingTouch(SeekBar seekBar) { }
-                @Override public void onStopTrackingTouch(SeekBar seekBar) { }
-            });
-            box.addView(exposure[0]);
-        }
-
-        final SeekBar[] zoom = new SeekBar[1];
-        final TextView[] zoomValue = new TextView[1];
-        if (current.isZoomSupported() && current.getMaxZoom() > 0) {
-            final List<Integer> ratios = current.getZoomRatios();
-            zoomValue[0] = label("", 11, Color.WHITE, Typeface.NORMAL);
-            box.addView(cameraSettingLabel("ZOOM"));
-            box.addView(zoomValue[0]);
-            zoom[0] = new SeekBar(this);
-            zoom[0].setMax(current.getMaxZoom());
-            zoom[0].setProgress(current.getZoom());
-            Runnable updateZoom = () -> {
-                int z = zoom[0].getProgress();
-                int ratio = ratios != null && z < ratios.size() ? ratios.get(z) : 100;
-                zoomValue[0].setText(String.format(Locale.US, "%.2f×", ratio / 100.0));
-            };
-            updateZoom.run();
-            zoom[0].setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateZoom.run(); }
-                @Override public void onStartTrackingTouch(SeekBar seekBar) { }
-                @Override public void onStopTrackingTouch(SeekBar seekBar) { }
-            });
-            box.addView(zoom[0]);
-        }
-
-        final SeekBar jpegQuality = new SeekBar(this);
-        final TextView jpegValue = label("", 11, Color.WHITE, Typeface.NORMAL);
-        box.addView(cameraSettingLabel("JPEG QUALITY"));
-        box.addView(jpegValue);
-        jpegQuality.setMax(99);
-        jpegQuality.setProgress(Math.max(0, Math.min(99, current.getJpegQuality() - 1)));
-        Runnable updateJpeg = () -> jpegValue.setText((jpegQuality.getProgress() + 1) + "%");
-        updateJpeg.run();
-        jpegQuality.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateJpeg.run(); }
-            @Override public void onStartTrackingTouch(SeekBar seekBar) { }
-            @Override public void onStopTrackingTouch(SeekBar seekBar) { }
+            if (locationExif != null) locationExif.start();
+            String gps = gpsEnabled ? (locationExif == null ? "GPS pending" : locationExif.status()) : "GPS EXIF off";
+            setStatus(summary + " • " + gps);
         });
-        box.addView(jpegQuality);
-
-        final CheckBox aeLock = new CheckBox(this);
-        final boolean aeSupported = current.isAutoExposureLockSupported();
-        if (aeSupported) {
-            aeLock.setText("Lock auto exposure (AE)");
-            aeLock.setTextColor(Color.WHITE);
-            aeLock.setChecked(current.getAutoExposureLock());
-            box.addView(aeLock);
-        }
-
-        final CheckBox awbLock = new CheckBox(this);
-        final boolean awbSupported = current.isAutoWhiteBalanceLockSupported();
-        if (awbSupported) {
-            awbLock.setText("Lock auto white balance (AWB)");
-            awbLock.setTextColor(Color.WHITE);
-            awbLock.setChecked(current.getAutoWhiteBalanceLock());
-            box.addView(awbLock);
-        }
-
-        TextView note = label("Only controls reported by this camera are shown. Manual ISO/shutter speed require a Camera2 implementation on supported phones.", 10, MUTED, Typeface.NORMAL);
-        note.setPadding(0, dp(12), 0, 0);
-        box.addView(note);
-
-        new AlertDialog.Builder(this)
-                .setTitle("Camera settings • this phone")
-                .setView(scroll)
-                .setNegativeButton("Cancel", null)
-                .setNeutralButton("Defaults", (d, which) -> {
-                    cameraParameterProfiles.remove(cameraId);
-                    openCamera();
-                    setStatus("Camera settings reset for this camera");
-                })
-                .setPositiveButton("Apply", (d, which) -> {
-                    synchronized (MainActivity.this) {
-                        if (camera == null) return;
-                        try {
-                            Camera.Parameters p = camera.getParameters();
-                            if (resolution[0] != null && pictureSizes != null) {
-                                Camera.Size chosen = pictureSizes.get(resolution[0].getSelectedItemPosition());
-                                p.setPictureSize(chosen.width, chosen.height);
-                            }
-                            if (flash[0] != null) p.setFlashMode((String) flash[0].getSelectedItem());
-                            if (focus[0] != null) p.setFocusMode((String) focus[0].getSelectedItem());
-                            if (whiteBalance[0] != null) p.setWhiteBalance((String) whiteBalance[0].getSelectedItem());
-                            if (scene[0] != null) p.setSceneMode((String) scene[0].getSelectedItem());
-                            if (exposure[0] != null) p.setExposureCompensation(exposure[0].getProgress() + minEv);
-                            if (zoom[0] != null) p.setZoom(zoom[0].getProgress());
-                            p.setJpegQuality(jpegQuality.getProgress() + 1);
-                            if (aeSupported) p.setAutoExposureLock(aeLock.isChecked());
-                            if (awbSupported) p.setAutoWhiteBalanceLock(awbLock.isChecked());
-                            camera.setParameters(p);
-                            cameraParameterProfiles.put(cameraId, p.flatten());
-                            setStatus("Camera settings applied");
-                        } catch (Exception e) {
-                            setStatus("Camera rejected setting combination • " + e.getMessage());
-                        }
-                    }
-                })
-                .show();
     }
 
     private void refreshDeviceSyncList(Map<String, InetAddress> snapshot) {
@@ -904,8 +730,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             p.add(Manifest.permission.CAMERA);
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED)
             p.add(Manifest.permission.NEARBY_WIFI_DEVICES);
-        if (Build.VERSION.SDK_INT <= 32 && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
-            p.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        if (Build.VERSION.SDK_INT <= 32) {
+            if (checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+                p.add(Manifest.permission.ACCESS_COARSE_LOCATION);
+            if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+                p.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        }
         if (Build.VERSION.SDK_INT <= 28 && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
             p.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
         if (p.isEmpty()) startCore();
@@ -923,62 +753,67 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             net = new Net();
             net.start();
         }
+        if (locationExif == null) locationExif = new LocationExifHelper(this);
+        locationExif.start();
+        if (camera2 == null) {
+            camera2 = new Camera2Controller(this, surface, new Camera2Controller.Listener() {
+                @Override public void onReady(String lensLabel) {
+                    updateLensButton();
+                    setStatus("Camera2 ready • " + lensLabel);
+                }
+                @Override public void onError(String message) { setStatus(message); }
+            });
+            updateLensButton();
+        }
         if (surfaceReady) openCamera();
     }
 
-    @Override public void surfaceCreated(SurfaceHolder h) {
+    @Override public void onSurfaceTextureAvailable(SurfaceTexture texture, int width, int height) {
         surfaceReady = true;
-        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) openCamera();
+        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            if (camera2 == null) startCore();
+            else openCamera();
+        }
     }
 
-    @Override public void surfaceChanged(SurfaceHolder h, int f, int w, int z) { }
+    @Override public void onSurfaceTextureSizeChanged(SurfaceTexture texture, int width, int height) {
+        if (camera2 != null) camera2.onViewSizeChanged();
+    }
 
-    @Override public void surfaceDestroyed(SurfaceHolder h) {
+    @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture texture) {
         surfaceReady = false;
         closeCamera();
+        return true;
     }
 
+    @Override public void onSurfaceTextureUpdated(SurfaceTexture texture) { }
+
     private synchronized void openCamera() {
-        closeCamera();
-        try {
-            camera = Camera.open(cameraId);
-            Camera.Parameters p = camera.getParameters();
-            String profile = cameraParameterProfiles.get(cameraId);
-            if (profile != null) {
-                try { p.unflatten(profile); } catch (Exception ignored) { }
-            } else {
-                List<String> modes = p.getSupportedFocusModes();
-                if (modes != null && modes.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE))
-                    p.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
-                if (p.getSupportedFlashModes() != null && p.getSupportedFlashModes().contains(Camera.Parameters.FLASH_MODE_OFF))
-                    p.setFlashMode(Camera.Parameters.FLASH_MODE_OFF);
-            }
-            camera.setParameters(p);
-            camera.setDisplayOrientation(90);
-            camera.setPreviewDisplay(surface.getHolder());
-            camera.startPreview();
-            setStatus("Camera ready • choose host or join");
-        } catch (Exception e) {
-            setStatus("Camera error • " + e.getMessage());
-        }
+        if (camera2 != null && surfaceReady) camera2.open();
     }
 
     private synchronized void closeCamera() {
-        if (camera != null) {
-            try { camera.stopPreview(); } catch (Exception ignored) { }
-            camera.release();
-            camera = null;
-        }
+        if (camera2 != null) camera2.close();
     }
 
-    private void flip() {
-        int n = Camera.getNumberOfCameras();
-        if (n < 2) {
-            Toast.makeText(this, "Only one camera is available", Toast.LENGTH_SHORT).show();
+    private void showLensSelector() {
+        if (camera2 == null) {
+            Toast.makeText(this, "Camera2 is not ready", Toast.LENGTH_SHORT).show();
             return;
         }
-        cameraId = (cameraId + 1) % n;
-        openCamera();
+        camera2.showLensDialog(this, () -> {
+            updateLensButton();
+            setStatus("Selected lens • " + camera2.getSelectedLensLabel());
+        });
+    }
+
+    private void updateLensButton() {
+        if (lensButton == null) return;
+        String label = camera2 == null ? "SELECT" : camera2.getSelectedLensLabel();
+        int bullet = label.indexOf(" • ");
+        if (bullet > 0) label = label.substring(0, bullet);
+        final String shown = label.toUpperCase(Locale.US);
+        ui(() -> lensButton.setText("LENS\n" + shown));
     }
 
     private void hostAndHotspot() {
@@ -1145,29 +980,33 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     private synchronized void takePicture(int seq, String source) {
-        if (camera == null || captureInProgress) return;
+        if (camera2 == null || !camera2.isReady() || captureInProgress) return;
         captureInProgress = true;
         activeCountdownSeq = -1;
         flashOverlay.setAlpha(0.85f);
         flashOverlay.animate().alpha(0f).setDuration(260).start();
         countdownBadge.setVisibility(View.GONE);
         final long callNs = SystemClock.elapsedRealtimeNanos();
-        try {
-            camera.takePicture(null, null, (data, c) -> {
-                String uri = saveJpeg(data, seq);
-                setStatus("Saved capture #" + seq + " • " + source.toLowerCase(Locale.US));
-                if (net != null) net.report(seq, callNs, uri);
-                try { c.startPreview(); } catch (Exception ignored) { }
+        camera2.capture(new Camera2Controller.CaptureCallback() {
+            @Override public void onCaptured(byte[] data, long sensorTimestampNs, Camera2Controller.LensInfo lens) {
+                try {
+                    String uri = saveJpeg(data, seq, lens);
+                    String lensName = lens == null ? "camera" : lens.label;
+                    setStatus("Saved capture #" + seq + " • " + source.toLowerCase(Locale.US) + " • " + lensName);
+                    if (net != null) net.report(seq, callNs, uri);
+                } finally {
+                    captureInProgress = false;
+                }
+            }
+
+            @Override public void onError(String message) {
                 captureInProgress = false;
-            });
-        } catch (Exception e) {
-            captureInProgress = false;
-            setStatus("Capture failed • " + e.getMessage());
-            try { camera.startPreview(); } catch (Exception ignored) { }
-        }
+                setStatus(message);
+            }
+        });
     }
 
-    private String saveJpeg(byte[] data, int seq) {
+    private String saveJpeg(byte[] data, int seq, Camera2Controller.LensInfo lens) {
         try {
             String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
             String name = "SyncCam_" + stamp + "_S" + seq + "_" + deviceId + ".jpg";
@@ -1179,7 +1018,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             Uri u = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
             if (u == null) return "";
             try (OutputStream o = getContentResolver().openOutputStream(u)) {
+                if (o == null) return "";
                 o.write(data);
+            }
+            if (locationExif != null) {
+                String lensName = lens == null ? "" : lens.label;
+                float focal = lens == null ? 0f : lens.focalLengthMm;
+                locationExif.embed(u, storeGpsInJpeg, lensName, focal, deviceId);
             }
             String uri = u.toString();
             if (photoTransfer != null) photoTransfer.recordLocal(seq, name, uri);
@@ -1194,6 +1039,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         super.onDestroy();
         stopAutoCapture(null);
         closeCamera();
+        if (locationExif != null) locationExif.stop();
+        if (camera2 != null) camera2.shutdown();
         scheduler.shutdownNow();
         autoScheduler.shutdownNow();
         if (net != null) net.stop();
