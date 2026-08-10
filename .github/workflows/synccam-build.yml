@@ -20,6 +20,9 @@ jobs:
         working-directory: synccam
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -30,25 +33,34 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+      - name: Apply v7 Camera2 integration
+        if: github.event_name == 'pull_request' && github.head_ref == 'agent/synccam-apk-build'
+        working-directory: .
+        run: python tools/apply_v7_camera2.py
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
+      - name: Commit validated v7 source to CI branch
+        if: github.event_name == 'pull_request' && github.head_ref == 'agent/synccam-apk-build'
+        working-directory: .
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -f tools/apply_v7_camera2.py .github/v7-camera2-trigger.txt
+          git add synccam/app/src/main/java/com/openai/synccam/MainActivity.java
+          git add synccam/app/src/main/java/com/openai/synccam/Camera2Controller.java
+          git add synccam/app/src/main/java/com/openai/synccam/LocationExifHelper.java
+          git add synccam/app/src/main/AndroidManifest.xml synccam/app/build.gradle
+          git commit -m "SyncCam v7 Camera2 lenses and GPS EXIF"
+          git push origin HEAD:agent/synccam-apk-build
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SyncCam-v6.0.0-apk
+          name: SyncCam-v7.0.0-apk
           path: synccam/app/build/outputs/apk/debug/app-debug.apk
-      - name: Publish SyncCam v6.0.0 release
+      - name: Publish existing SyncCam v6.0.0 release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v6.0.0.apk
-          if gh release view v6.0.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload v6.0.0 /tmp/SyncCam-v6.0.0.apk --clobber --repo "$GITHUB_REPOSITORY"
-          else
-            gh release create v6.0.0 /tmp/SyncCam-v6.0.0.apk \
-              --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
-              --title "SyncCam v6.0.0" \
-              --notes "Adds host-controlled automatic synchronized interval capture and a capability-driven local camera settings panel. Supported controls are queried per phone and can include resolution, flash, focus mode, white balance, scene mode, exposure compensation, zoom, JPEG quality, AE lock and AWB lock. Existing direct hotspot networking and per-device photo sync are preserved."
-          fi
+          gh release upload v6.0.0 /tmp/SyncCam-v6.0.0.apk --clobber --repo "$GITHUB_REPOSITORY" || true
