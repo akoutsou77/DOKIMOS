@@ -1,0 +1,1 @@
+Publish validated SyncCam v7.0.0 from main.
