@@ -70,13 +70,13 @@ final class LocationExifHelper implements LocationListener {
         return String.format(Locale.US, "GPS last fix %.0f s ago%s", ageMs / 1000.0, accuracy);
     }
 
-    boolean embed(Uri uri, String lensLabel, float focalLengthMm, String deviceId) {
+    boolean embed(Uri uri, boolean includeGps, String lensLabel, float focalLengthMm, String deviceId) {
         if (uri == null) return false;
-        Location location = getBestLocation();
+        Location location = includeGps ? getBestLocation() : null;
         try (ParcelFileDescriptor pfd = activity.getContentResolver().openFileDescriptor(uri, "rw")) {
             if (pfd == null) return false;
             ExifInterface exif = new ExifInterface(pfd.getFileDescriptor());
-            if (location != null) exif.setGpsInfo(location);
+            if (includeGps && location != null) exif.setGpsInfo(location);
             if (focalLengthMm > 0f) {
                 long milli = Math.max(1L, Math.round(focalLengthMm * 1000.0));
                 exif.setAttribute(ExifInterface.TAG_FOCAL_LENGTH, milli + "/1000");
@@ -85,7 +85,7 @@ final class LocationExifHelper implements LocationListener {
             String comment = "SyncCam device=" + deviceId + (lensLabel == null ? "" : "; lens=" + lensLabel);
             exif.setAttribute(ExifInterface.TAG_USER_COMMENT, comment);
             exif.saveAttributes();
-            return location != null;
+            return !includeGps || location != null;
         } catch (Exception e) {
             return false;
         }
