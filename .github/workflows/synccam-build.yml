@@ -52,3 +52,16 @@ jobs:
               --title "SyncCam v7.0.0" \
               --notes "Camera2 capture engine with logical and physical lens selection where exposed by Android, per-lens camera settings, optional GPS EXIF, lens/focal metadata, automatic synchronized interval capture, and per-device photo sync. Existing direct hotspot/local Wi-Fi synchronization is preserved."
           fi
+      - name: Publish v7 from validated main source via CI branch
+        if: github.event_name == 'pull_request' && github.head_ref == 'agent/synccam-apk-build'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAIN_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.0.0.apk
+          gh release delete v7.0.0 --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create v7.0.0 /tmp/SyncCam-v7.0.0.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$MAIN_SHA" \
+            --title "SyncCam v7.0.0" \
+            --notes "Camera2 capture engine with logical and physical lens selection where exposed by Android, per-lens camera settings, optional GPS EXIF, lens/focal metadata, automatic synchronized interval capture, and per-device photo sync. Existing direct hotspot/local Wi-Fi synchronization is preserved."
