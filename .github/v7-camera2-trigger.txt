@@ -1,1 +1,0 @@
-SyncCam v7 Camera2 multi-lens and GPS EXIF validation

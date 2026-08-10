@@ -8,8 +8,8 @@ android {
         applicationId 'com.openai.synccam'
         minSdk 26
         targetSdk 35
-        versionCode 6
-        versionName '6.0.0-auto-camera'
+        versionCode 7
+        versionName '7.0.0-camera2-gps'
     }
 
     buildTypes {
@@ -22,4 +22,8 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+}
+
+dependencies {
+    implementation "androidx.exifinterface:exifinterface:1.4.2"
 }
