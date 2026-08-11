@@ -33,24 +33,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Apply v7.1 camera diagnostics
-        if: github.event_name == 'pull_request' && github.head_ref == 'agent/synccam-apk-build'
-        working-directory: .
-        run: python tools/apply_v71_camera_diagnostics.py
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
-      - name: Commit validated v7.1 source to CI branch
-        if: github.event_name == 'pull_request' && github.head_ref == 'agent/synccam-apk-build'
-        working-directory: .
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm -f tools/apply_v71_camera_diagnostics.py .github/v71-camera-diagnostics-trigger.txt
-          git add synccam/app/src/main/java/com/openai/synccam/Camera2Controller.java synccam/app/build.gradle
-          if ! git diff --cached --quiet; then
-            git commit -m "SyncCam v7.1 camera diagnostics and expanded lens routes"
-            git push origin HEAD:agent/synccam-apk-build
-          fi
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -62,7 +46,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if ! grep -q "versionName '7.1.0-camera-diagnostics'" app/build.gradle; then
-            echo "Source is not v7.1.0 yet; release publication skipped."
+            echo "Source is not v7.1.0; release publication skipped."
             exit 0
           fi
           cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.1.0.apk
@@ -73,5 +57,18 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "SyncCam v7.1.0" \
-              --notes "Adds Camera2 diagnostics with all reported camera IDs, physical IDs, focal lengths, hardware level, zoom and manual-control capabilities. Selectable lenses now include independently openable physical camera IDs as direct routes in addition to logical-to-physical routes where Android exposes both. Sync, automatic capture, per-device photo transfer and GPS EXIF are preserved."
+              --notes "Adds Camera2 diagnostics with all reported camera IDs, physical IDs, focal lengths, hardware level, zoom and manual-control capabilities. Selectable lenses include independently openable physical camera IDs as direct routes in addition to logical-to-physical routes where Android exposes both. Existing synchronization, automatic capture, per-device photo sync and GPS EXIF are preserved."
           fi
+      - name: Publish v7.1 from validated main source via CI branch
+        if: github.event_name == 'pull_request' && github.head_ref == 'agent/synccam-apk-build'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAIN_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.1.0.apk
+          gh release delete v7.1.0 --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create v7.1.0 /tmp/SyncCam-v7.1.0.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$MAIN_SHA" \
+            --title "SyncCam v7.1.0" \
+            --notes "Adds Camera2 diagnostics with all reported camera IDs, physical IDs, focal lengths, hardware level, zoom and manual-control capabilities. Selectable lenses include independently openable physical camera IDs as direct routes in addition to logical-to-physical routes where Android exposes both. Existing synchronization, automatic capture, per-device photo sync and GPS EXIF are preserved."
