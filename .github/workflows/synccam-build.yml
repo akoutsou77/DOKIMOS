@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - agent/synccam-apk-build
   pull_request:
     branches:
       - main
@@ -21,7 +22,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
           fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
@@ -34,13 +34,13 @@ jobs:
         with:
           gradle-version: '8.9'
       - name: Apply v7.4 always-foreground mode
-        if: github.event_name == 'pull_request' && github.head_ref == 'agent/synccam-apk-build'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/agent/synccam-apk-build'
         working-directory: .
         run: python tools/apply_v74_foreground.py
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
       - name: Commit validated v7.4 source to CI branch
-        if: github.event_name == 'pull_request' && github.head_ref == 'agent/synccam-apk-build'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/agent/synccam-apk-build'
         working-directory: .
         run: |
           git config user.name "github-actions[bot]"
