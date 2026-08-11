@@ -66,11 +66,16 @@ final class PhotoTransfer {
     private volatile boolean running = true;
     private ServerSocket server;
     private int totalReceived = 0;
+    private volatile String hostProjectName = "Session";
 
     PhotoTransfer(Context context, String deviceId, Listener listener) {
         this.context = context.getApplicationContext();
         this.deviceId = deviceId;
         this.listener = listener;
+    }
+
+    void setHostProjectName(String projectName) {
+        hostProjectName = safeSegment(projectName, "Session");
     }
 
     void start() {
@@ -180,7 +185,8 @@ final class PhotoTransfer {
                 return;
             }
 
-            String key = remoteId + "#" + sequence;
+            String project = hostProjectName;
+            String key = project + "|" + remoteId + "#" + sequence;
             synchronized (this) {
                 if (receivedKeys.contains(key)) {
                     drain(in);
@@ -189,7 +195,7 @@ final class PhotoTransfer {
                 receivedKeys.add(key);
             }
 
-            String uri = saveIncoming(in, remoteId, sequence);
+            String uri = saveIncoming(in, remoteId, sequence, project);
             if (uri.isEmpty()) {
                 synchronized (this) { receivedKeys.remove(key); }
                 return;
@@ -205,19 +211,19 @@ final class PhotoTransfer {
         }
     }
 
-    private String saveIncoming(InputStream in, String remoteId, int sequence) {
+    private String saveIncoming(InputStream in, String remoteId, int sequence, String project) {
         OutputStream rawOut = null;
         try {
             String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
-            String safeId = remoteId == null ? "REMOTE" : remoteId.replaceAll("[^A-Za-z0-9_-]", "");
-            if (safeId.isEmpty()) safeId = "REMOTE";
-            String name = "SyncCam_HOST_" + safeId + "_S" + sequence + "_" + stamp + ".jpg";
+            String safeId = safeSegment(remoteId, "REMOTE").replace(" ", "_");
+            String safeProject = safeSegment(project, "Session");
+            String name = "SyncCam_" + safeId + "_S" + sequence + "_" + stamp + ".jpg";
 
             ContentValues v = new ContentValues();
             v.put(MediaStore.Images.Media.DISPLAY_NAME, name);
             v.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
             if (Build.VERSION.SDK_INT >= 29)
-                v.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/SyncCam");
+                v.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/SyncCam/" + safeProject + "/PHONE_" + safeId);
             Uri u = context.getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
             if (u == null) return "";
 
@@ -246,6 +252,21 @@ final class PhotoTransfer {
             byte[] buf = new byte[32 * 1024];
             while (in.read(buf) >= 0) { }
         } catch (Exception ignored) { }
+    }
+
+    private static String safeSegment(String raw, String fallback) {
+        String s = raw == null ? "" : raw.trim();
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c < 32 || c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') out.append('_');
+            else out.append(c);
+        }
+        String clean = out.toString().trim();
+        while (clean.contains("__")) clean = clean.replace("__", "_");
+        if (clean.isEmpty() || ".".equals(clean) || "..".equals(clean)) clean = fallback;
+        if (clean.length() > 64) clean = clean.substring(0, 64).trim();
+        return clean;
     }
 
     void stop() {

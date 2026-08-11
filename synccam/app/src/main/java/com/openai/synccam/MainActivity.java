@@ -93,7 +93,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private View shadeOverlay, reticleOverlay, topUi, deckUi;
     private TextView uiToggleButton;
     private boolean uiHidden = false;
-    private TextView syncValue, peerValue, hotspotInfo, photoSync, autoCaptureButton, cameraSettingsButton, lensButton;
+    private TextView syncValue, peerValue, hotspotInfo, photoSync, autoCaptureButton, cameraSettingsButton, lensButton, projectButton;
     private EditText code;
     private LinearLayout deviceSyncSection, deviceSyncList;
     private HorizontalScrollView deviceSyncScroller;
@@ -119,10 +119,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private WifiManager.LocalOnlyHotspotReservation hotspotReservation;
     private String hotspotSsid = "";
     private String hotspotPassword = "";
+    private String projectName = "Session";
 
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
         applyForegroundDisplayMode();
+        loadProjectName();
         Window w = getWindow();
         w.setStatusBarColor(Color.BLACK);
         w.setNavigationBarColor(Color.BLACK);
@@ -141,6 +143,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 setStatus(message);
             }
         });
+        photoTransfer.setHostProjectName(projectName);
         photoTransfer.start();
         requestPermissions();
     }
@@ -391,7 +394,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         automationRow.addView(cameraSettingsButton, weightedButton(1f, dp(5), 0));
         deck.addView(automationRow);
 
-        TextView footer = label("Per-device photo sync • host interval capture • camera controls adapt to this phone", 9, 0xFF8D96A3, Typeface.NORMAL);
+        projectButton = actionButton("PROJECT / SESSION  •  " + projectName, 0xFF343B46, Color.WHITE);
+        LinearLayout.LayoutParams projectLp = new LinearLayout.LayoutParams(-1, dp(44));
+        projectLp.topMargin = dp(4);
+        projectLp.bottomMargin = dp(4);
+        deck.addView(projectButton, projectLp);
+
+        TextView footer = label("Per-device photo sync • project/session folders • host interval capture • camera controls adapt to this phone", 9, 0xFF8D96A3, Typeface.NORMAL);
         footer.setGravity(Gravity.CENTER);
         deck.addView(footer);
 
@@ -423,6 +432,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         photoSync.setOnClickListener(v -> syncPhotosToHost());
         autoCaptureButton.setOnClickListener(v -> toggleAutoCapture());
         cameraSettingsButton.setOnClickListener(v -> showCameraSettings());
+        projectButton.setOnClickListener(v -> showProjectSettings());
         uiToggleButton.setOnClickListener(v -> toggleUiVisibility());
         copy.setOnClickListener(v -> copyConnectionInfo());
     }
@@ -442,6 +452,75 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             uiToggleButton.setText(uiHidden ? "SHOW UI" : "HIDE UI");
             uiToggleButton.setAlpha(uiHidden ? 0.55f : 0.82f);
         }
+    }
+
+    private void loadProjectName() {
+        String stored = getSharedPreferences("synccam_settings", MODE_PRIVATE).getString("project_name", "");
+        if (stored == null || stored.trim().isEmpty()) {
+            stored = "Session_" + new SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(new Date());
+            getSharedPreferences("synccam_settings", MODE_PRIVATE).edit().putString("project_name", stored).apply();
+        }
+        projectName = safeProjectName(stored);
+    }
+
+    private String safeProjectName(String raw) {
+        String s = raw == null ? "" : raw.trim();
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c < 32 || c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') out.append('_');
+            else out.append(c);
+        }
+        String clean = out.toString().trim();
+        while (clean.contains("__")) clean = clean.replace("__", "_");
+        if (clean.isEmpty() || ".".equals(clean) || "..".equals(clean)) clean = "Session";
+        if (clean.length() > 64) clean = clean.substring(0, 64).trim();
+        return clean;
+    }
+
+    private void showProjectSettings() {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setText(projectName);
+        input.setSelectAllOnFocus(true);
+        input.setHint("Project or session name");
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(22), dp(8), dp(22), 0);
+        TextView help = label("Host storage: Pictures/SyncCam/<Project>/HOST_<id> and PHONE_<id>. The name is remembered for the next launch.", 12, MUTED, Typeface.NORMAL);
+        help.setPadding(0, 0, 0, dp(8));
+        box.addView(help);
+        box.addView(input, new LinearLayout.LayoutParams(-1, dp(52)));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Project / Session")
+                .setView(box)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Save", null)
+                .create();
+        dialog.setOnShowListener(v -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(btn -> {
+            String typed = input.getText().toString().trim();
+            if (typed.isEmpty()) {
+                input.setError("Enter a project/session name");
+                return;
+            }
+            projectName = safeProjectName(typed);
+            getSharedPreferences("synccam_settings", MODE_PRIVATE).edit().putString("project_name", projectName).apply();
+            if (photoTransfer != null) photoTransfer.setHostProjectName(projectName);
+            updateProjectButton();
+            setStatus("Project/session • " + projectName);
+            dialog.dismiss();
+        }));
+        dialog.show();
+    }
+
+    private void updateProjectButton() {
+        if (projectButton == null) return;
+        String shown = projectName == null ? "Session" : projectName;
+        if (shown.length() > 28) shown = shown.substring(0, 25) + "…";
+        final String label = "PROJECT / SESSION  •  " + shown;
+        ui(() -> projectButton.setText(label));
     }
 
     private LinearLayout metricCard(String title, String value) {
@@ -1085,8 +1164,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             ContentValues v = new ContentValues();
             v.put(MediaStore.Images.Media.DISPLAY_NAME, name);
             v.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
-            if (Build.VERSION.SDK_INT >= 29)
-                v.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/SyncCam");
+            if (Build.VERSION.SDK_INT >= 29) {
+                String relative = Environment.DIRECTORY_PICTURES + "/SyncCam";
+                if (net != null && net.host) relative += "/" + safeProjectName(projectName) + "/HOST_" + safeProjectName(deviceId);
+                v.put(MediaStore.Images.Media.RELATIVE_PATH, relative);
+            }
             Uri u = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
             if (u == null) return "";
             try (OutputStream o = getContentResolver().openOutputStream(u)) {
