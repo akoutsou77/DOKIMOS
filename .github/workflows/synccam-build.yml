@@ -33,24 +33,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Apply v7.2 lens selection fix
-        if: github.event_name == 'pull_request' && github.head_ref == 'agent/synccam-apk-build'
-        working-directory: .
-        run: python tools/apply_v72_lens_selection.py
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
-      - name: Commit validated v7.2 source to CI branch
-        if: github.event_name == 'pull_request' && github.head_ref == 'agent/synccam-apk-build'
-        working-directory: .
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm -f tools/apply_v72_lens_selection.py .github/v72-lens-trigger.txt
-          git add synccam/app/src/main/java/com/openai/synccam/Camera2Controller.java synccam/app/build.gradle
-          if ! git diff --cached --quiet; then
-            git commit -m "SyncCam v7.2 fix multi-lens selection"
-            git push origin HEAD:agent/synccam-apk-build
-          fi
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -62,7 +46,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if ! grep -q "versionName '7.2.0-lens-selection'" app/build.gradle; then
-            echo "Source is not v7.2.0 yet; release publication skipped."
+            echo "Source is not v7.2.0; release publication skipped."
             exit 0
           fi
           cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.2.0.apk
@@ -73,5 +57,18 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "SyncCam v7.2.0" \
-              --notes "Fixes lens selection on logical multi-camera phones. Adds Camera2 HAL zoom/lens presets, permits zoom ratios below 1.0 for ultra-wide, keeps explicit physical camera routes, shows actual camera IDs in the lens chooser, and records the active physical camera ID when Android reports it. Existing sync, auto capture, per-device photo transfer and GPS EXIF are preserved."
+              --notes "Fixes multi-lens selection. Adds HAL lens/zoom presets for logical multi-camera devices, permits sub-1x ultra-wide zoom ratios, keeps explicit physical camera routes, shows camera IDs, and records the active physical camera ID when Android reports it."
           fi
+      - name: Publish v7.2 from validated main source via CI branch
+        if: github.event_name == 'pull_request' && github.head_ref == 'agent/synccam-apk-build'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAIN_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.2.0.apk
+          gh release delete v7.2.0 --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create v7.2.0 /tmp/SyncCam-v7.2.0.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$MAIN_SHA" \
+            --title "SyncCam v7.2.0" \
+            --notes "Fixes multi-lens selection. Adds HAL lens/zoom presets for logical multi-camera devices, permits sub-1x ultra-wide zoom ratios, keeps explicit physical camera routes, shows camera IDs, and records the active physical camera ID when Android reports it."
