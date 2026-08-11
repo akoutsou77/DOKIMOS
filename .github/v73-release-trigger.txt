@@ -1,0 +1,1 @@
+Trigger CI-only publication of the already validated SyncCam v7.3 source from main.
