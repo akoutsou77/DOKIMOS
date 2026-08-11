@@ -86,8 +86,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private static final int AMBER = 0xFFFFC65C;
     private static final int MUTED = 0xFFAEB6C2;
 
-    private TextureView surface;
+    private AspectTextureView surface;
     private TextView status, sync, peers, roleChip, groupChip, countdownBadge, trigger;
+    private View shadeOverlay, reticleOverlay, topUi, deckUi;
+    private TextView uiToggleButton;
+    private boolean uiHidden = false;
     private TextView syncValue, peerValue, hotspotInfo, photoSync, autoCaptureButton, cameraSettingsButton, lensButton;
     private EditText code;
     private LinearLayout deviceSyncSection, deviceSyncList;
@@ -144,21 +147,22 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
 
-        surface = new TextureView(this);
+        surface = new AspectTextureView(this);
         surface.setSurfaceTextureListener(this);
-        root.addView(surface, new FrameLayout.LayoutParams(-1, -1));
+        root.addView(surface, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
 
-        View shade = new View(this);
+        shadeOverlay = new View(this);
         GradientDrawable shadeBg = new GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
                 new int[]{0xC9000000, 0x18000000, 0x00000000, 0x30000000, 0xC9000000});
-        shade.setBackground(shadeBg);
-        root.addView(shade, new FrameLayout.LayoutParams(-1, -1));
+        shadeOverlay.setBackground(shadeBg);
+        root.addView(shadeOverlay, new FrameLayout.LayoutParams(-1, -1));
 
-        ReticleView reticle = new ReticleView(this);
-        root.addView(reticle, new FrameLayout.LayoutParams(-1, -1));
+        reticleOverlay = new ReticleView(this);
+        root.addView(reticleOverlay, new FrameLayout.LayoutParams(-1, -1));
 
         LinearLayout top = new LinearLayout(this);
+        topUi = top;
         top.setOrientation(LinearLayout.VERTICAL);
         top.setPadding(dp(18), dp(12), dp(18), dp(12));
 
@@ -201,6 +205,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         root.addView(countdownBadge, countLp);
 
         LinearLayout deck = new LinearLayout(this);
+        deckUi = deck;
         deck.setOrientation(LinearLayout.VERTICAL);
         deck.setPadding(dp(16), dp(12), dp(16), dp(12));
         deck.setBackground(roundRect(BG_PANEL, 28, 0, 0));
@@ -360,6 +365,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         flashOverlay.setClickable(false);
         root.addView(flashOverlay, new FrameLayout.LayoutParams(-1, -1));
 
+        uiToggleButton = smallButton("HIDE UI");
+        uiToggleButton.setAlpha(0.82f);
+        FrameLayout.LayoutParams toggleLp = new FrameLayout.LayoutParams(dp(72), dp(38), Gravity.TOP | Gravity.END);
+        toggleLp.topMargin = dp(8);
+        toggleLp.rightMargin = dp(8);
+        root.addView(uiToggleButton, toggleLp);
+
         setContentView(root);
 
         host.setOnClickListener(v -> hostAndHotspot());
@@ -369,7 +381,25 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         photoSync.setOnClickListener(v -> syncPhotosToHost());
         autoCaptureButton.setOnClickListener(v -> toggleAutoCapture());
         cameraSettingsButton.setOnClickListener(v -> showCameraSettings());
+        uiToggleButton.setOnClickListener(v -> toggleUiVisibility());
         copy.setOnClickListener(v -> copyConnectionInfo());
+    }
+
+    private void toggleUiVisibility() {
+        uiHidden = !uiHidden;
+        int visibility = uiHidden ? View.GONE : View.VISIBLE;
+        if (topUi != null) topUi.setVisibility(visibility);
+        if (deckUi != null) deckUi.setVisibility(visibility);
+        if (shadeOverlay != null) shadeOverlay.setVisibility(visibility);
+        if (reticleOverlay != null) reticleOverlay.setVisibility(visibility);
+        if (countdownBadge != null) {
+            if (uiHidden) countdownBadge.setVisibility(View.GONE);
+            else if (activeCountdownSeq >= 0) countdownBadge.setVisibility(View.VISIBLE);
+        }
+        if (uiToggleButton != null) {
+            uiToggleButton.setText(uiHidden ? "SHOW UI" : "HIDE UI");
+            uiToggleButton.setAlpha(uiHidden ? 0.55f : 0.82f);
+        }
     }
 
     private LinearLayout metricCard(String title, String value) {
