@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - agent/synccam-apk-build
   pull_request:
     branches:
       - main
@@ -21,8 +20,6 @@ jobs:
         working-directory: synccam
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -33,24 +30,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Apply v7.4 always-foreground mode
-        if: github.event_name == 'push' && github.ref == 'refs/heads/agent/synccam-apk-build'
-        working-directory: .
-        run: python tools/apply_v74_foreground.py
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
-      - name: Commit validated v7.4 source to CI branch
-        if: github.event_name == 'push' && github.ref == 'refs/heads/agent/synccam-apk-build'
-        working-directory: .
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm -f tools/apply_v74_foreground.py .github/v74-foreground-trigger.txt
-          git add synccam/app/src/main/java/com/openai/synccam/MainActivity.java synccam/app/build.gradle
-          if ! git diff --cached --quiet; then
-            git commit -m "SyncCam v7.4 immersive foreground mode"
-            git push origin HEAD:agent/synccam-apk-build
-          fi
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -62,7 +43,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if ! grep -q "versionName '7.4.0-foreground'" app/build.gradle; then
-            echo "Source is not v7.4.0 yet; release publication skipped."
+            echo "Source is not v7.4.0; release publication skipped."
             exit 0
           fi
           cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.4.0.apk
