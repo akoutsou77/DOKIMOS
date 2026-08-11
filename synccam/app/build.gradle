@@ -8,8 +8,8 @@ android {
         applicationId 'com.openai.synccam'
         minSdk 26
         targetSdk 35
-        versionCode 10
-        versionName '7.3.0-native-viewport'
+        versionCode 11
+        versionName '7.4.0-foreground'
     }
 
     buildTypes {
