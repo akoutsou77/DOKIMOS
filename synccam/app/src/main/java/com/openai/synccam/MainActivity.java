@@ -106,7 +106,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private boolean surfaceReady;
     private Net net;
     private PhotoTransfer photoTransfer;
-    private final String deviceId = UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.US);
+    private String deviceId = "";
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private final ScheduledExecutorService autoScheduler = Executors.newSingleThreadScheduledExecutor();
     private ScheduledFuture<?> autoCaptureFuture;
@@ -125,6 +125,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         super.onCreate(b);
         applyForegroundDisplayMode();
         loadProjectName();
+        loadDeviceId();
         Window w = getWindow();
         w.setStatusBarColor(Color.BLACK);
         w.setNavigationBarColor(Color.BLACK);
@@ -452,6 +453,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             uiToggleButton.setText(uiHidden ? "SHOW UI" : "HIDE UI");
             uiToggleButton.setAlpha(uiHidden ? 0.55f : 0.82f);
         }
+    }
+
+    private void loadDeviceId() {
+        String stored = getSharedPreferences("synccam_settings", MODE_PRIVATE).getString("device_id", "");
+        if (stored == null || stored.trim().isEmpty()) {
+            stored = UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.US);
+            getSharedPreferences("synccam_settings", MODE_PRIVATE).edit().putString("device_id", stored).apply();
+        }
+        deviceId = stored.trim().toUpperCase(Locale.US);
     }
 
     private void loadProjectName() {
