@@ -1,1 +1,0 @@
-Trigger CI validation for SyncCam v7.1 camera diagnostics and expanded lens selection routes.
