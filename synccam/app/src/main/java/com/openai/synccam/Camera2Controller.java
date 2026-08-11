@@ -188,8 +188,130 @@ final class Camera2Controller {
                     restart();
                     if (onChanged != null) onChanged.run();
                 })
+                .setNeutralButton("Diagnostics", (dialog, which) -> showDiagnosticsDialog(host))
                 .setNegativeButton("Cancel", null)
                 .show();
+    }
+
+    void showDiagnosticsDialog(Activity host) {
+        final String report = buildDiagnosticsReport();
+        ScrollView scroll = new ScrollView(host);
+        TextView text = new TextView(host);
+        int pad = dp(host, 16);
+        text.setPadding(pad, pad, pad, pad);
+        text.setText(report);
+        text.setTextSize(11);
+        text.setTextIsSelectable(true);
+        text.setTypeface(android.graphics.Typeface.MONOSPACE);
+        scroll.addView(text);
+
+        new AlertDialog.Builder(host)
+                .setTitle("Camera2 diagnostics")
+                .setView(scroll)
+                .setNeutralButton("Copy report", (dialog, which) -> {
+                    android.content.ClipboardManager cm = (android.content.ClipboardManager) host.getSystemService(Context.CLIPBOARD_SERVICE);
+                    if (cm != null) {
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("SyncCam camera diagnostics", report));
+                        android.widget.Toast.makeText(host, "Camera diagnostics copied", android.widget.Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setPositiveButton("Close", null)
+                .show();
+    }
+
+    private String buildDiagnosticsReport() {
+        StringBuilder out = new StringBuilder();
+        out.append("SyncCam v7.1 camera diagnostics\n");
+        out.append("Android ").append(Build.VERSION.RELEASE).append(" (API ").append(Build.VERSION.SDK_INT).append(")\n\n");
+
+        out.append("SELECTABLE SYNCCAM ROUTES: ").append(lenses.size()).append("\n");
+        for (int i = 0; i < lenses.size(); i++) {
+            LensInfo lens = lenses.get(i);
+            out.append(i == selectedIndex ? "* " : "  ")
+                    .append(i + 1).append(". ").append(lens.label).append("\n");
+            if (lens.physicalId == null) {
+                out.append("     OPEN camera ID ").append(lens.logicalId).append("\n");
+            } else {
+                out.append("     OPEN logical ").append(lens.logicalId)
+                        .append(" -> TARGET physical ").append(lens.physicalId).append("\n");
+            }
+        }
+
+        out.append("\nANDROID CAMERA2 REPORT\n");
+        try {
+            String[] ids = manager.getCameraIdList();
+            Set<String> directIds = new HashSet<>(Arrays.asList(ids));
+            out.append("Direct camera IDs reported by CameraManager: ").append(Arrays.toString(ids)).append("\n");
+
+            for (String id : ids) {
+                CameraCharacteristics c = manager.getCameraCharacteristics(id);
+                Integer facing = c.get(CameraCharacteristics.LENS_FACING);
+                Integer hw = c.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL);
+                float[] focals = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+                SizeF sensor = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
+                Rect active = c.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+                Boolean flash = c.get(CameraCharacteristics.FLASH_INFO_AVAILABLE);
+                Float minFocus = c.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
+                Range<Integer> iso = c.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE);
+                Range<Long> shutter = c.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
+                StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                Size maxJpeg = map == null ? null : chooseJpegSize(map.getOutputSizes(ImageFormat.JPEG));
+                Set<String> physical = Build.VERSION.SDK_INT >= 28 ? c.getPhysicalCameraIds() : Collections.emptySet();
+
+                out.append("\nCAMERA ID ").append(id).append("  [DIRECT OPEN]\n");
+                out.append("  facing: ").append(facingName(facing == null ? CameraCharacteristics.LENS_FACING_BACK : facing)).append("\n");
+                out.append("  hardware: ").append(hardwareLevelName(hw)).append("\n");
+                out.append("  focal lengths: ").append(focals == null ? "[]" : Arrays.toString(focals)).append(" mm\n");
+                out.append("  sensor size: ").append(sensor == null ? "unknown" : sensor.toString()).append(" mm\n");
+                out.append("  active array: ").append(active == null ? "unknown" : active.toShortString()).append("\n");
+                out.append("  max JPEG: ").append(maxJpeg == null ? "unknown" : maxJpeg.getWidth() + "x" + maxJpeg.getHeight()).append("\n");
+                if (Build.VERSION.SDK_INT >= 30) {
+                    Range<Float> zoom = c.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
+                    out.append("  zoom ratio range: ").append(zoom == null ? "not reported" : zoom.toString()).append("\n");
+                } else {
+                    Float zoom = c.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM);
+                    out.append("  max digital zoom: ").append(zoom == null ? "not reported" : String.format(Locale.US, "%.2fx", zoom)).append("\n");
+                }
+                out.append("  flash: ").append(Boolean.TRUE.equals(flash) ? "YES" : "NO").append("\n");
+                out.append("  manual sensor: ").append(hasCapability(c, CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) ? "YES" : "NO").append("\n");
+                out.append("  RAW: ").append(hasCapability(c, CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW) ? "YES" : "NO").append("\n");
+                if (Build.VERSION.SDK_INT >= 28) {
+                    out.append("  logical multi-camera: ").append(hasCapability(c, CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA) ? "YES" : "NO").append("\n");
+                }
+                out.append("  ISO range: ").append(iso == null ? "not reported" : iso.toString()).append("\n");
+                out.append("  shutter ns range: ").append(shutter == null ? "not reported" : shutter.toString()).append("\n");
+                out.append("  min focus distance: ").append(minFocus == null ? "not reported" : String.format(Locale.US, "%.3f diopters", minFocus)).append("\n");
+                out.append("  physical IDs: ").append(physical.isEmpty() ? "[]" : physical.toString()).append("\n");
+
+                for (String pid : physical) {
+                    boolean routed = false;
+                    for (LensInfo lens : lenses) {
+                        if (id.equals(lens.logicalId) && pid.equals(lens.physicalId)) {
+                            routed = true;
+                            break;
+                        }
+                    }
+                    out.append("    PHYSICAL ").append(pid)
+                            .append(" • SyncCam routed: ").append(routed ? "YES" : "NO")
+                            .append(" • direct ID: ").append(directIds.contains(pid) ? "YES" : "NO");
+                    try {
+                        CameraCharacteristics pc = manager.getCameraCharacteristics(pid);
+                        float[] pf = pc.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+                        SizeF ps = pc.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
+                        out.append(" • focal ").append(pf == null ? "[]" : Arrays.toString(pf)).append(" mm");
+                        if (ps != null) out.append(" • sensor ").append(ps.toString()).append(" mm");
+                    } catch (Exception e) {
+                        out.append(" • characteristics hidden");
+                    }
+                    out.append("\n");
+                }
+            }
+        } catch (Exception e) {
+            out.append("\nDIAGNOSTIC ERROR: ").append(e.getClass().getSimpleName()).append(": ").append(e.getMessage()).append("\n");
+        }
+
+        out.append("\nNOTE: If the stock camera app has a lens that is absent from both the direct and physical ID lists above, the phone manufacturer is not exposing that lens through the public Camera2 HAL to third-party apps.\n");
+        return out.toString();
     }
 
     void showSettingsDialog(Activity host, boolean gpsEnabled, SettingsCallback callback) {
@@ -456,6 +578,7 @@ final class Camera2Controller {
         lenses.clear();
         try {
             String[] ids = manager.getCameraIdList();
+            Set<String> topLevelIds = new HashSet<>(Arrays.asList(ids));
             Set<String> ownedPhysical = new HashSet<>();
             if (Build.VERSION.SDK_INT >= 28) {
                 for (String id : ids) {
@@ -479,11 +602,15 @@ final class Camera2Controller {
                         Integer pfacing = pc.get(CameraCharacteristics.LENS_FACING);
                         int actualFacing = pfacing == null ? f : pfacing;
                         float focal = firstFocal(pc);
-                        lenses.add(new LensInfo(id, pid, actualFacing, focal, classifyLens(pc, actualFacing, focal)));
+                        String physicalLabel = classifyLens(pc, actualFacing, focal);
+                        if (topLevelIds.contains(pid)) physicalLabel += " • routed";
+                        lenses.add(new LensInfo(id, pid, actualFacing, focal, physicalLabel));
                     }
-                } else if (!ownedPhysical.contains(id)) {
+                } else {
                     float focal = firstFocal(c);
-                    lenses.add(new LensInfo(id, null, f, focal, classifyLens(c, f, focal)));
+                    String directLabel = classifyLens(c, f, focal);
+                    if (ownedPhysical.contains(id)) directLabel += " • direct";
+                    lenses.add(new LensInfo(id, null, f, focal, directLabel));
                 }
             }
             lenses.sort(Comparator
@@ -768,8 +895,21 @@ final class Camera2Controller {
         opening = false;
     }
 
+    private static String hardwareLevelName(Integer level) {
+        if (level == null) return "UNKNOWN";
+        switch (level) {
+            case CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY: return "LEGACY";
+            case CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED: return "LIMITED";
+            case CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_FULL: return "FULL";
+            case CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_3: return "LEVEL_3";
+            case CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_EXTERNAL: return "EXTERNAL";
+            default: return "LEVEL " + level;
+        }
+    }
+
     private static String classifyLens(CameraCharacteristics c, int facing, float focal) {
         if (facing == CameraCharacteristics.LENS_FACING_FRONT) return "Front" + focalSuffix(focal);
+        if (facing == CameraCharacteristics.LENS_FACING_EXTERNAL) return "External" + focalSuffix(focal);
         SizeF sensor = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
         String kind = "Rear";
         if (sensor != null && focal > 0f) {
@@ -783,7 +923,9 @@ final class Camera2Controller {
     }
 
     private static String facingName(int facing) {
-        return facing == CameraCharacteristics.LENS_FACING_FRONT ? "Front" : "Rear";
+        if (facing == CameraCharacteristics.LENS_FACING_FRONT) return "Front";
+        if (facing == CameraCharacteristics.LENS_FACING_EXTERNAL) return "External";
+        return "Rear";
     }
 
     private static String focalSuffix(float focal) {
