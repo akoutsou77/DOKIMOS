@@ -1,1 +1,0 @@
-Trigger CI validation for SyncCam v7.3 hideable UI and native-aspect camera viewport.

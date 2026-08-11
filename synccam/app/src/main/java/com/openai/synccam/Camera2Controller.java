@@ -114,7 +114,7 @@ final class Camera2Controller {
     }
 
     private final Activity activity;
-    private final TextureView textureView;
+    private final AspectTextureView textureView;
     private final CameraManager manager;
     private final Listener listener;
     private final HandlerThread thread = new HandlerThread("SyncCam-Camera2");
@@ -138,7 +138,7 @@ final class Camera2Controller {
         PendingCapture(CaptureCallback callback) { this.callback = callback; }
     }
 
-    Camera2Controller(Activity activity, TextureView textureView, Listener listener) {
+    Camera2Controller(Activity activity, AspectTextureView textureView, Listener listener) {
         this.activity = activity;
         this.textureView = textureView;
         this.listener = listener;
@@ -749,11 +749,12 @@ final class Camera2Controller {
         Size[] jpegChoices = map.getOutputSizes(ImageFormat.JPEG);
         if (settings.pictureSize == null || !containsSize(jpegChoices, settings.pictureSize)) settings.pictureSize = chooseJpegSize(jpegChoices);
         Size[] previewChoices = map.getOutputSizes(SurfaceTexture.class);
-        previewSize = choosePreviewSize(previewChoices, textureView.getWidth(), textureView.getHeight());
+        previewSize = choosePreviewSize(previewChoices, settings.pictureSize, textureView.getWidth(), textureView.getHeight());
         if (settings.pictureSize == null || previewSize == null) {
             listener.onError("Camera does not expose compatible preview/JPEG sizes");
             return;
         }
+        updateViewportAspect(c, previewSize);
         SurfaceTexture texture = textureView.getSurfaceTexture();
         if (texture == null) return;
         texture.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
@@ -914,6 +915,22 @@ final class Camera2Controller {
         }
     }
 
+    private void updateViewportAspect(CameraCharacteristics c, Size size) {
+        if (c == null || size == null) return;
+        Integer sensor = c.get(CameraCharacteristics.SENSOR_ORIENTATION);
+        int sensorDegrees = sensor == null ? 90 : sensor;
+        int rotation = activity.getWindowManager().getDefaultDisplay().getRotation();
+        int displayDegrees;
+        if (rotation == Surface.ROTATION_90) displayDegrees = 90;
+        else if (rotation == Surface.ROTATION_180) displayDegrees = 180;
+        else if (rotation == Surface.ROTATION_270) displayDegrees = 270;
+        else displayDegrees = 0;
+        boolean swap = ((sensorDegrees - displayDegrees + 360) % 180) == 90;
+        int ratioWidth = swap ? size.getHeight() : size.getWidth();
+        int ratioHeight = swap ? size.getWidth() : size.getHeight();
+        textureView.post(() -> textureView.setAspectRatio(ratioWidth, ratioHeight));
+    }
+
     private void configureTransform(LensInfo lens, Size size) {
         if (lens == null || size == null || textureView.getWidth() == 0 || textureView.getHeight() == 0) return;
         textureView.post(() -> {
@@ -928,7 +945,7 @@ final class Camera2Controller {
             if (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270) {
                 bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY());
                 matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL);
-                float scale = Math.max((float) viewHeight / size.getHeight(), (float) viewWidth / size.getWidth());
+                float scale = Math.min((float) viewHeight / size.getHeight(), (float) viewWidth / size.getWidth());
                 matrix.postScale(scale, scale, centerX, centerY);
                 matrix.postRotate(90 * (rotation - 2), centerX, centerY);
             } else if (rotation == Surface.ROTATION_180) {
@@ -1021,17 +1038,31 @@ final class Camera2Controller {
         return Collections.max(Arrays.asList(sizes), Comparator.comparingLong(Camera2Controller::area));
     }
 
-    private static Size choosePreviewSize(Size[] sizes, int viewW, int viewH) {
+    private static Size choosePreviewSize(Size[] sizes, Size pictureSize, int viewW, int viewH) {
         if (sizes == null || sizes.length == 0) return null;
-        ArrayList<Size> candidates = new ArrayList<>(Arrays.asList(sizes));
-        candidates.sort(Comparator.comparingLong(Camera2Controller::area));
-        Size best = candidates.get(0);
-        long target = Math.max(1, (long) Math.max(viewW, viewH) * Math.max(viewW, viewH));
-        for (Size s : candidates) {
-            if (s.getWidth() <= 1920 && s.getHeight() <= 1920) best = s;
-            if (area(s) >= target && s.getWidth() <= 1920 && s.getHeight() <= 1920) break;
+        double targetRatio;
+        if (pictureSize != null && pictureSize.getHeight() > 0) {
+            targetRatio = (double) pictureSize.getWidth() / pictureSize.getHeight();
+        } else {
+            int shortSide = Math.max(1, Math.min(viewW, viewH));
+            int longSide = Math.max(shortSide, Math.max(viewW, viewH));
+            targetRatio = (double) longSide / shortSide;
         }
-        return best;
+
+        ArrayList<Size> bounded = new ArrayList<>();
+        for (Size s : sizes) {
+            if (s.getWidth() <= 1920 && s.getHeight() <= 1920) bounded.add(s);
+        }
+        if (bounded.isEmpty()) bounded.addAll(Arrays.asList(sizes));
+
+        bounded.sort((a, b) -> {
+            double da = Math.abs(((double) a.getWidth() / a.getHeight()) - targetRatio);
+            double db = Math.abs(((double) b.getWidth() / b.getHeight()) - targetRatio);
+            int ratioOrder = Double.compare(da, db);
+            if (ratioOrder != 0) return ratioOrder;
+            return Long.compare(area(b), area(a));
+        });
+        return bounded.get(0);
     }
 
     private static List<Size> sortedSizes(Size[] sizes) {
