@@ -1,1 +1,0 @@
-Trigger CI validation for SyncCam v7.2 logical/physical lens selection fixes. Retrigger.

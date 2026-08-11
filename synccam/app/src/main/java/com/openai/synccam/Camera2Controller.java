@@ -16,6 +16,7 @@ import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CameraMetadata;
 import android.hardware.camera2.CaptureFailure;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.OutputConfiguration;
 import android.hardware.camera2.params.StreamConfigurationMap;
@@ -74,17 +75,25 @@ final class Camera2Controller {
         final float focalLengthMm;
         final String label;
         final String key;
+        final float presetZoomRatio;
 
         LensInfo(String logicalId, String physicalId, int facing, float focalLengthMm, String label) {
+            this(logicalId, physicalId, facing, focalLengthMm, label, 0f);
+        }
+
+        LensInfo(String logicalId, String physicalId, int facing, float focalLengthMm, String label, float presetZoomRatio) {
             this.logicalId = logicalId;
             this.physicalId = physicalId;
             this.facing = facing;
             this.focalLengthMm = focalLengthMm;
             this.label = label;
-            this.key = logicalId + "|" + (physicalId == null ? "AUTO" : physicalId);
+            this.presetZoomRatio = presetZoomRatio;
+            this.key = logicalId + "|" + (physicalId == null ? "AUTO" : physicalId)
+                    + String.format(Locale.US, "|Z%.3f", presetZoomRatio);
         }
 
         boolean isFront() { return facing == CameraCharacteristics.LENS_FACING_FRONT; }
+        boolean isHalZoomPreset() { return physicalId == null && presetZoomRatio > 0f; }
     }
 
     static final class Settings {
@@ -121,6 +130,7 @@ final class Camera2Controller {
     private volatile CaptureRequest.Builder previewBuilder;
     private volatile boolean opening = false;
     private volatile PendingCapture pendingCapture;
+    private volatile String lastActivePhysicalId = "";
     private Size previewSize;
 
     private static final class PendingCapture {
@@ -179,7 +189,17 @@ final class Camera2Controller {
             return;
         }
         String[] names = new String[lenses.size()];
-        for (int i = 0; i < lenses.size(); i++) names[i] = lenses.get(i).label;
+        for (int i = 0; i < lenses.size(); i++) {
+            LensInfo lens = lenses.get(i);
+            String route;
+            if (lens.physicalId != null) {
+                route = "logical ID " + lens.logicalId + " → physical ID " + lens.physicalId;
+            } else {
+                route = "camera ID " + lens.logicalId;
+            }
+            if (lens.isHalZoomPreset()) route += String.format(Locale.US, " • request %.2f×", lens.presetZoomRatio);
+            names[i] = lens.label + "\n" + route;
+        }
         new AlertDialog.Builder(host)
                 .setTitle("Select camera lens")
                 .setSingleChoiceItems(names, selectedIndex, (dialog, which) -> {
@@ -221,16 +241,20 @@ final class Camera2Controller {
 
     private String buildDiagnosticsReport() {
         StringBuilder out = new StringBuilder();
-        out.append("SyncCam v7.1 camera diagnostics\n");
+        out.append("SyncCam v7.2 camera diagnostics\n");
         out.append("Android ").append(Build.VERSION.RELEASE).append(" (API ").append(Build.VERSION.SDK_INT).append(")\n\n");
 
         out.append("SELECTABLE SYNCCAM ROUTES: ").append(lenses.size()).append("\n");
+        out.append("Last active physical ID reported by HAL: ")
+                .append(lastActivePhysicalId.isEmpty() ? "not reported yet" : lastActivePhysicalId).append("\n");
         for (int i = 0; i < lenses.size(); i++) {
             LensInfo lens = lenses.get(i);
             out.append(i == selectedIndex ? "* " : "  ")
                     .append(i + 1).append(". ").append(lens.label).append("\n");
             if (lens.physicalId == null) {
-                out.append("     OPEN camera ID ").append(lens.logicalId).append("\n");
+                out.append("     OPEN camera ID ").append(lens.logicalId);
+                if (lens.isHalZoomPreset()) out.append(String.format(Locale.US, " -> CONTROL_ZOOM_RATIO %.2f×", lens.presetZoomRatio));
+                out.append("\n");
             } else {
                 out.append("     OPEN logical ").append(lens.logicalId)
                         .append(" -> TARGET physical ").append(lens.physicalId).append("\n");
@@ -561,7 +585,9 @@ final class Camera2Controller {
             still.set(CaptureRequest.JPEG_ORIENTATION, jpegOrientation(c, lens));
             pendingCapture = new PendingCapture(callback);
             session.capture(still.build(), new CameraCaptureSession.CaptureCallback() {
-                @Override public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) { }
+                @Override public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
+                    updateActivePhysicalId(result);
+                }
                 @Override public void onCaptureFailed(CameraCaptureSession session, CaptureRequest request, CaptureFailure failure) {
                     PendingCapture p = pendingCapture;
                     pendingCapture = null;
@@ -612,6 +638,7 @@ final class Camera2Controller {
                     if (ownedPhysical.contains(id)) directLabel += " • direct";
                     lenses.add(new LensInfo(id, null, f, focal, directLabel));
                 }
+                if (!ownedPhysical.contains(id)) addHalZoomPresets(id, c, f);
             }
             lenses.sort(Comparator
                     .comparingInt((LensInfo l) -> l.isFront() ? 1 : 0)
@@ -624,6 +651,44 @@ final class Camera2Controller {
             selectedIndex = preferred;
         } catch (Exception e) {
             listener.onError("Camera2 enumeration failed: " + e.getMessage());
+        }
+    }
+
+    private void addHalZoomPresets(String cameraId, CameraCharacteristics c, int facing) {
+        if (Build.VERSION.SDK_INT < 30 || facing == CameraCharacteristics.LENS_FACING_FRONT) return;
+        Range<Float> range = c.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
+        if (range == null) return;
+        float lo = range.getLower();
+        float hi = range.getUpper();
+        if (hi <= lo + 0.01f) return;
+
+        ArrayList<Float> ratios = new ArrayList<>();
+        if (lo < 0.95f) ratios.add(lo);
+        if (lo <= 1f && hi >= 1f) ratios.add(1f);
+        float[] common = new float[]{2f, 3f, 5f, 10f};
+        for (float candidate : common) {
+            if (candidate >= lo - 0.001f && candidate <= hi + 0.001f) ratios.add(candidate);
+        }
+        boolean hasTele = false;
+        for (float ratio : ratios) if (ratio > 1.05f) hasTele = true;
+        if (!hasTele && hi > 1.05f) ratios.add(hi);
+
+        ArrayList<Float> unique = new ArrayList<>();
+        for (float ratio : ratios) {
+            boolean duplicate = false;
+            for (float existing : unique) if (Math.abs(existing - ratio) < 0.03f) duplicate = true;
+            if (!duplicate) unique.add(ratio);
+        }
+
+        float baseFocal = firstFocal(c);
+        for (float ratio : unique) {
+            String kind;
+            if (ratio < 0.95f) kind = "Ultra-wide";
+            else if (ratio <= 1.05f) kind = "Main";
+            else kind = "Tele";
+            String label = String.format(Locale.US, "%s %.2f× • HAL", kind, ratio);
+            float estimatedFocal = baseFocal > 0f ? baseFocal * ratio : 0f;
+            lenses.add(new LensInfo(cameraId, null, facing, estimatedFocal, label, ratio));
         }
     }
 
@@ -730,7 +795,11 @@ final class Camera2Controller {
                         previewBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
                         previewBuilder.addTarget(previewSurface);
                         applySettings(previewBuilder, lens, c, settingsFor(lens, c), false);
-                        session.setRepeatingRequest(previewBuilder.build(), null, handler);
+                        session.setRepeatingRequest(previewBuilder.build(), new CameraCaptureSession.CaptureCallback() {
+                            @Override public void onCaptureCompleted(CameraCaptureSession s, CaptureRequest request, TotalCaptureResult result) {
+                                updateActivePhysicalId(result);
+                            }
+                        }, handler);
                         configureTransform(lens, previewSize);
                         listener.onReady(lens.label);
                     } catch (Exception e) {
@@ -776,7 +845,8 @@ final class Camera2Controller {
             if (evRange != null) set(b, lens, CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, clamp(s.exposureComp, evRange.getLower(), evRange.getUpper()));
             set(b, lens, CaptureRequest.CONTROL_AE_LOCK, s.aeLock);
         }
-        applyZoom(b, lens, c, s.zoomRatio);
+        float requestedZoom = lens != null && lens.isHalZoomPreset() ? lens.presetZoomRatio : s.zoomRatio;
+        applyZoom(b, lens, c, requestedZoom);
         if (still) b.set(CaptureRequest.JPEG_QUALITY, (byte) clamp(s.jpegQuality, 1, 100));
     }
 
@@ -789,15 +859,16 @@ final class Camera2Controller {
     }
 
     private void applyZoom(CaptureRequest.Builder b, LensInfo lens, CameraCharacteristics c, float requested) {
-        float max = maxZoom(c);
-        float zoom = clamp(requested, 1f, max);
         if (Build.VERSION.SDK_INT >= 30) {
             Range<Float> range = c.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
             if (range != null) {
-                set(b, lens, CaptureRequest.CONTROL_ZOOM_RATIO, clamp(zoom, range.getLower(), range.getUpper()));
+                float zoom = clamp(requested, range.getLower(), range.getUpper());
+                set(b, lens, CaptureRequest.CONTROL_ZOOM_RATIO, zoom);
                 return;
             }
         }
+        float max = maxZoom(c);
+        float zoom = clamp(requested, 1f, max);
         Rect active = c.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
         if (active != null && zoom > 1.001f) {
             int cropW = Math.max(2, Math.round(active.width() / zoom));
@@ -806,6 +877,14 @@ final class Camera2Controller {
             int top = active.centerY() - cropH / 2;
             set(b, lens, CaptureRequest.SCALER_CROP_REGION, new Rect(left, top, left + cropW, top + cropH));
         }
+    }
+
+    private void updateActivePhysicalId(TotalCaptureResult result) {
+        if (Build.VERSION.SDK_INT < 29 || result == null) return;
+        try {
+            String active = result.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID);
+            if (active != null && !active.isEmpty()) lastActivePhysicalId = active;
+        } catch (Exception ignored) { }
     }
 
     private Settings settingsFor(LensInfo lens, CameraCharacteristics c) {
