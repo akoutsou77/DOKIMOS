@@ -20,9 +20,6 @@ jobs:
         working-directory: synccam
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
-          fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -33,27 +30,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Apply v7.3 UI and native-aspect preview
-        if: github.event_name == 'pull_request' && github.head_ref == 'agent/synccam-apk-build'
-        working-directory: .
-        run: python tools/apply_v73_viewport_ui.py
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
-      - name: Commit validated v7.3 source to CI branch
-        if: github.event_name == 'pull_request' && github.head_ref == 'agent/synccam-apk-build'
-        working-directory: .
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm -f tools/apply_v73_viewport_ui.py .github/v73-view-trigger.txt
-          git add synccam/app/src/main/java/com/openai/synccam/MainActivity.java
-          git add synccam/app/src/main/java/com/openai/synccam/Camera2Controller.java
-          git add synccam/app/src/main/java/com/openai/synccam/AspectTextureView.java
-          git add synccam/app/build.gradle
-          if ! git diff --cached --quiet; then
-            git commit -m "SyncCam v7.3 hideable UI and native-aspect preview"
-            git push origin HEAD:agent/synccam-apk-build
-          fi
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -65,7 +43,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if ! grep -q "versionName '7.3.0-native-viewport'" app/build.gradle; then
-            echo "Source is not v7.3.0 yet; release publication skipped."
+            echo "Source is not v7.3.0; release publication skipped."
             exit 0
           fi
           cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.3.0.apk
@@ -78,3 +56,16 @@ jobs:
               --title "SyncCam v7.3.0" \
               --notes "Adds HIDE UI / SHOW UI and a camera preview viewport that follows the selected photo resolution aspect ratio. The preview is aspect-fit/letterboxed instead of stretched or center-cropped. Existing multi-lens selection, sync, automatic capture, photo transfer and GPS EXIF are preserved."
           fi
+      - name: Publish v7.3 from validated main source via CI branch
+        if: github.event_name == 'pull_request' && github.head_ref == 'agent/synccam-apk-build'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAIN_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.3.0.apk
+          gh release delete v7.3.0 --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create v7.3.0 /tmp/SyncCam-v7.3.0.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$MAIN_SHA" \
+            --title "SyncCam v7.3.0" \
+            --notes "Adds HIDE UI / SHOW UI and a camera preview viewport that follows the selected photo resolution aspect ratio. The preview is aspect-fit/letterboxed instead of stretched or center-cropped. Existing multi-lens selection, sync, automatic capture, photo transfer and GPS EXIF are preserved."
