@@ -1171,8 +1171,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 try {
                     String uri = saveJpeg(data, seq, lens, projectSnapshot, "HOST".equals(source), groupSnapshot);
                     String lensName = lens == null ? "camera" : lens.label;
-                    setStatus("Saved capture #" + seq + " • " + source.toLowerCase(Locale.US) + " • " + lensName);
-                    if (net != null) net.report(seq, callNs, uri);
+                    if (uri == null || uri.isEmpty()) {
+                        setStatus("SAVE FAILED #" + seq + " • JPEG captured but MediaStore did not save it");
+                    } else {
+                        setStatus("Saved capture #" + seq + " • " + source.toLowerCase(Locale.US) + " • " + lensName + " • " + uri);
+                        if (net != null) net.report(seq, callNs, uri);
+                    }
                 } finally {
                     captureInProgress = false;
                 }
@@ -1192,44 +1196,27 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             String name = "SyncCam_" + stamp + "_S" + seq + "_" + deviceId + ".jpg";
             String storageProject = safeProjectName(projectSnapshot == null ? projectName : projectSnapshot);
             String safeId = safeProjectName(deviceId).replace(" ", "_");
+            String relative = Environment.DIRECTORY_PICTURES + "/SyncCam";
+            if (hostCapture) relative += "/" + storageProject + "/HOST_" + safeId;
+            File legacyDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+                    hostCapture ? "SyncCam/" + storageProject + "/HOST_" + safeId : "SyncCam");
 
-            ContentValues v = new ContentValues();
-            v.put(MediaStore.Images.Media.DISPLAY_NAME, name);
-            v.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
-            if (Build.VERSION.SDK_INT >= 29) {
-                String relative = Environment.DIRECTORY_PICTURES + "/SyncCam";
-                if (hostCapture) relative += "/" + storageProject + "/HOST_" + safeId;
-                v.put(MediaStore.Images.Media.RELATIVE_PATH, relative);
-            } else {
-                String sub = "SyncCam";
-                if (hostCapture) sub += "/" + storageProject + "/HOST_" + safeId;
-                File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), sub);
-                if (!dir.exists() && !dir.mkdirs()) return "";
-                v.put(MediaStore.Images.Media.DATA, new File(dir, name).getAbsolutePath());
-            }
-            u = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
-            if (u == null) return "";
-            try (OutputStream o = getContentResolver().openOutputStream(u)) {
-                if (o == null) {
-                    try { getContentResolver().delete(u, null, null); } catch (Exception ignored) { }
-                    return "";
-                }
-                o.write(data);
-            }
+            u = MediaStoreJpegWriter.writePending(this, data, name, relative, legacyDir);
             if (locationExif != null) {
                 String lensName = lens == null ? "" : lens.label;
                 float focal = lens == null ? 0f : lens.focalLengthMm;
                 locationExif.embed(u, storeGpsInJpeg, lensName, focal, deviceId);
             }
+            MediaStoreJpegWriter.publish(this, u);
+
             String uri = u.toString();
             String captureGroup = groupSnapshot == null ? "" : groupSnapshot;
             if (photoTransfer != null) photoTransfer.recordLocal(seq, name, uri, captureGroup);
             return uri;
         } catch (Exception e) {
-            if (u != null) {
-                try { getContentResolver().delete(u, null, null); } catch (Exception ignored) { }
-            }
-            setStatus("Save failed • " + e.getMessage());
+            MediaStoreJpegWriter.abort(this, u);
+            String detail = e.getClass().getSimpleName() + ": " + (e.getMessage() == null ? "no detail" : e.getMessage());
+            setStatus("SAVE FAILED #" + seq + " • " + detail);
             return "";
         }
     }

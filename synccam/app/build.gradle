@@ -8,8 +8,8 @@ android {
         applicationId 'com.openai.synccam'
         minSdk 26
         targetSdk 35
-        versionCode 13
-        versionName '7.6.0-session-integrity'
+        versionCode 14
+        versionName '7.6.1-android11-storage'
     }
 
     buildTypes {

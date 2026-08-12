@@ -306,51 +306,24 @@ final class PhotoTransfer {
     }
 
     private String saveIncoming(InputStream in, String remoteId, int sequence, String project) {
-        OutputStream rawOut = null;
         Uri u = null;
         try {
             String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
             String safeId = safeSegment(remoteId, "REMOTE").replace(" ", "_");
             String safeProject = safeSegment(project, "Session");
             String name = "SyncCam_" + safeId + "_S" + sequence + "_" + stamp + ".jpg";
+            String relative = Environment.DIRECTORY_PICTURES + "/SyncCam/" + safeProject + "/PHONE_" + safeId;
+            File legacyDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+                    "SyncCam/" + safeProject + "/PHONE_" + safeId);
 
-            ContentValues v = new ContentValues();
-            v.put(MediaStore.Images.Media.DISPLAY_NAME, name);
-            v.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
-            if (Build.VERSION.SDK_INT >= 29) {
-                v.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/SyncCam/" + safeProject + "/PHONE_" + safeId);
-            } else {
-                File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-                        "SyncCam/" + safeProject + "/PHONE_" + safeId);
-                if (!dir.exists() && !dir.mkdirs()) return "";
-                v.put(MediaStore.Images.Media.DATA, new File(dir, name).getAbsolutePath());
-            }
-            u = context.getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
-            if (u == null) return "";
-
-            rawOut = context.getContentResolver().openOutputStream(u);
-            if (rawOut == null) {
-                try { context.getContentResolver().delete(u, null, null); } catch (Exception ignored) { }
-                return "";
-            }
-            try (OutputStream out = new BufferedOutputStream(rawOut)) {
-                rawOut = null;
-                byte[] buf = new byte[64 * 1024];
-                int n;
-                while ((n = in.read(buf)) >= 0) {
-                    if (n > 0) out.write(buf, 0, n);
-                }
-                out.flush();
-            }
+            u = MediaStoreJpegWriter.writePending(context, in, name, relative, legacyDir);
+            MediaStoreJpegWriter.publish(context, u);
             return u.toString();
         } catch (Exception e) {
-            if (u != null) {
-                try { context.getContentResolver().delete(u, null, null); } catch (Exception ignored) { }
-            }
-            listener.onTransferStatus("Host save failed • " + e.getMessage());
+            MediaStoreJpegWriter.abort(context, u);
+            String detail = e.getClass().getSimpleName() + ": " + (e.getMessage() == null ? "no detail" : e.getMessage());
+            listener.onTransferStatus("Host save failed • " + detail);
             return "";
-        } finally {
-            try { if (rawOut != null) rawOut.close(); } catch (Exception ignored) { }
         }
     }
 
