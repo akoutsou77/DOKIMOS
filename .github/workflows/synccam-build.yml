@@ -35,24 +35,24 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SyncCam-v7.5.0-apk
+          name: SyncCam-v7.6.0-apk
           path: synccam/app/build/outputs/apk/debug/app-debug.apk
-      - name: Publish SyncCam v7.5.0 release
+      - name: Publish SyncCam v7.6.0 release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ! grep -q "versionName '7.5.0-session-folders'" app/build.gradle; then
-            echo "Source is not v7.5.0; release publication skipped."
+          if ! grep -q "versionName '7.6.0-session-integrity'" app/build.gradle; then
+            echo "Source is not v7.6.0; release publication skipped."
             exit 0
           fi
-          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.5.0.apk
-          if gh release view v7.5.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload v7.5.0 /tmp/SyncCam-v7.5.0.apk --clobber --repo "$GITHUB_REPOSITORY"
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.6.0.apk
+          if gh release view v7.6.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v7.6.0 /tmp/SyncCam-v7.6.0.apk --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create v7.5.0 /tmp/SyncCam-v7.5.0.apk \
+            gh release create v7.6.0 /tmp/SyncCam-v7.6.0.apk \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "SyncCam v7.5.0" \
-              --notes "Adds a persistent Project / Session setting and organizes host storage as Pictures/SyncCam/<Project>/HOST_<id> for host captures and PHONE_<id> for each synced client. Project names are sanitized for safe folder paths. Existing Camera2 multi-lens selection, GPS EXIF, synchronized and automatic capture, native-aspect viewport, hide/show UI, immersive foreground mode and per-device photo sync are preserved."
+              --title "SyncCam v7.6.0" \
+              --notes "Audited project/session storage integrity. Host captures stay in Pictures/SyncCam/<Project>/HOST_<id>; client copies stay in PHONE_<id>. Project changes create a capture boundary, sync requests are bound to the project snapshot that started them, stale earlier captures are rejected, client captures are tagged by group, unsynced client photo manifests survive app restarts, persistent device IDs are retained, and Android 8/9 receive explicit project folder fallback storage."
           fi
