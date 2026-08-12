@@ -78,6 +78,7 @@ import java.util.concurrent.TimeUnit;
 @SuppressWarnings("deprecation")
 public class MainActivity extends Activity implements TextureView.SurfaceTextureListener {
     private static final int REQ = 42;
+    private static final int REQ_SAVE_TREE = 43;
     private static final int PORT = 39393;
     private static final String GROUP = "239.255.77.77";
     private static final long LEAD_NS = 2_500_000_000L;
@@ -94,7 +95,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private View shadeOverlay, reticleOverlay, topUi, deckUi;
     private TextView uiToggleButton;
     private boolean uiHidden = false;
-    private TextView syncValue, peerValue, hotspotInfo, photoSync, autoCaptureButton, cameraSettingsButton, lensButton, projectButton;
+    private TextView syncValue, peerValue, hotspotInfo, photoSync, autoCaptureButton, cameraSettingsButton, lensButton, projectButton, storageButton;
     private EditText code;
     private LinearLayout deviceSyncSection, deviceSyncList;
     private HorizontalScrollView deviceSyncScroller;
@@ -403,6 +404,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         projectLp.bottomMargin = dp(4);
         deck.addView(projectButton, projectLp);
 
+        storageButton = actionButton("SAVE ROOT  •  " + MediaStoreJpegWriter.selectedTreeLabel(this), 0xFF343B46, Color.WHITE);
+        LinearLayout.LayoutParams storageLp = new LinearLayout.LayoutParams(-1, dp(44));
+        storageLp.topMargin = dp(2);
+        storageLp.bottomMargin = dp(4);
+        deck.addView(storageButton, storageLp);
+
         TextView footer = label("Per-device photo sync • project/session folders • host interval capture • camera controls adapt to this phone", 9, 0xFF8D96A3, Typeface.NORMAL);
         footer.setGravity(Gravity.CENTER);
         deck.addView(footer);
@@ -436,8 +443,58 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         autoCaptureButton.setOnClickListener(v -> toggleAutoCapture());
         cameraSettingsButton.setOnClickListener(v -> showCameraSettings());
         projectButton.setOnClickListener(v -> showProjectSettings());
+        storageButton.setOnClickListener(v -> chooseSaveRoot());
+        storageButton.setOnLongClickListener(v -> { clearSaveRoot(); return true; });
         uiToggleButton.setOnClickListener(v -> toggleUiVisibility());
         copy.setOnClickListener(v -> copyConnectionInfo());
+    }
+
+    private void chooseSaveRoot() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+        Toast.makeText(this, "Choose the SyncCam save root, e.g. Pictures/SyncCam", Toast.LENGTH_LONG).show();
+        startActivityForResult(intent, REQ_SAVE_TREE);
+    }
+
+    private void clearSaveRoot() {
+        String raw = getSharedPreferences(MediaStoreJpegWriter.PREFS, MODE_PRIVATE)
+                .getString(MediaStoreJpegWriter.PREF_SAVE_TREE_URI, "");
+        if (raw != null && !raw.isEmpty()) {
+            try {
+                Uri uri = Uri.parse(raw);
+                getContentResolver().releasePersistableUriPermission(uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            } catch (Exception ignored) { }
+        }
+        getSharedPreferences(MediaStoreJpegWriter.PREFS, MODE_PRIVATE).edit()
+                .remove(MediaStoreJpegWriter.PREF_SAVE_TREE_URI).apply();
+        updateStorageButton();
+        setStatus("Save root reset • automatic MediaStore storage");
+    }
+
+    private void updateStorageButton() {
+        if (storageButton == null) return;
+        String label = MediaStoreJpegWriter.selectedTreeLabel(this);
+        ui(() -> storageButton.setText("SAVE ROOT  •  " + label));
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQ_SAVE_TREE || resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        Uri tree = data.getData();
+        int flags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        try {
+            getContentResolver().takePersistableUriPermission(tree, flags);
+            getSharedPreferences(MediaStoreJpegWriter.PREFS, MODE_PRIVATE).edit()
+                    .putString(MediaStoreJpegWriter.PREF_SAVE_TREE_URI, tree.toString()).apply();
+            updateStorageButton();
+            setStatus("Save root granted • " + MediaStoreJpegWriter.selectedTreeLabel(this));
+        } catch (Exception e) {
+            setStatus("SAVE ROOT FAILED • " + e.getClass().getSimpleName() + ": " + (e.getMessage() == null ? "no detail" : e.getMessage()));
+        }
     }
 
     private void toggleUiVisibility() {
