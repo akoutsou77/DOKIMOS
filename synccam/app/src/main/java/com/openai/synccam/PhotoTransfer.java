@@ -2,15 +2,19 @@ package com.openai.synccam;
 
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.MediaStore;
 
+import org.json.JSONObject;
+
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.File;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetAddress;
@@ -20,6 +24,7 @@ import java.net.Socket;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -32,6 +37,8 @@ import java.util.concurrent.Executors;
 final class PhotoTransfer {
     static final int PHOTO_PORT = 39394;
     private static final String MAGIC = "SYNCCAM_PHOTO_V1";
+    private static final String MANIFEST_PREFS = "synccam_photo_manifest";
+    private static final String SENT_KEY = "sent_keys";
 
     interface Listener {
         boolean acceptIncoming(String groupCode);
@@ -47,21 +54,35 @@ final class PhotoTransfer {
         final int sequence;
         final String name;
         final String uri;
+        final String groupCode;
 
-        PhotoRecord(int sequence, String name, String uri) {
+        PhotoRecord(int sequence, String name, String uri, String groupCode) {
             this.sequence = sequence;
             this.name = name;
             this.uri = uri;
+            this.groupCode = groupCode == null ? "" : groupCode;
+        }
+    }
+
+    private static final class RequestContext {
+        final String project;
+        final int minSequence;
+
+        RequestContext(String project, int minSequence) {
+            this.project = project;
+            this.minSequence = Math.max(1, minSequence);
         }
     }
 
     private final Context context;
     private final String deviceId;
     private final Listener listener;
+    private final SharedPreferences manifestPrefs;
     private final ExecutorService io = Executors.newCachedThreadPool();
-    private final Map<Integer, PhotoRecord> localPhotos = new LinkedHashMap<>();
+    private final Map<String, PhotoRecord> localPhotos = new LinkedHashMap<>();
     private final Set<String> receivedKeys = new HashSet<>();
     private final Set<String> sentKeys = new HashSet<>();
+    private final Map<Integer, RequestContext> requestContexts = new HashMap<>();
 
     private volatile boolean running = true;
     private ServerSocket server;
@@ -72,18 +93,31 @@ final class PhotoTransfer {
         this.context = context.getApplicationContext();
         this.deviceId = deviceId;
         this.listener = listener;
+        this.manifestPrefs = this.context.getSharedPreferences(MANIFEST_PREFS, Context.MODE_PRIVATE);
+        loadManifest();
     }
 
     void setHostProjectName(String projectName) {
         hostProjectName = safeSegment(projectName, "Session");
     }
 
+    synchronized void bindRequestProject(int requestId, String projectName, int minSequence) {
+        requestContexts.put(requestId, new RequestContext(safeSegment(projectName, "Session"), minSequence));
+    }
+
+    synchronized void releaseRequestProject(int requestId) {
+        requestContexts.remove(requestId);
+    }
+
     void start() {
         io.execute(this::serverLoop);
     }
 
-    synchronized void recordLocal(int sequence, String name, String uri) {
-        localPhotos.put(sequence, new PhotoRecord(sequence, name, uri));
+    synchronized void recordLocal(int sequence, String name, String uri, String groupCode) {
+        String group = groupCode == null ? "" : groupCode;
+        PhotoRecord record = new PhotoRecord(sequence, name, uri, group);
+        localPhotos.put(photoKey(group, sequence), record);
+        persistPhoto(record);
     }
 
     synchronized int localCount() {
@@ -94,22 +128,75 @@ final class PhotoTransfer {
         return totalReceived;
     }
 
-    void sendAllAsync(InetAddress hostAddress, String groupCode, int requestId, SendComplete complete) {
+    private String photoKey(String group, int sequence) {
+        return (group == null ? "" : group) + "#" + sequence;
+    }
+
+    private String sentKey(String group, int sequence) {
+        return (group == null ? "" : group) + "#" + sequence;
+    }
+
+    private String prefPhotoKey(String group, int sequence) {
+        String g = group == null || group.isEmpty() ? "NONE" : group.replaceAll("[^A-Za-z0-9_-]", "_");
+        return "photo." + g + "." + sequence;
+    }
+
+    private synchronized void loadManifest() {
+        localPhotos.clear();
+        sentKeys.clear();
+        Set<String> savedSent = manifestPrefs.getStringSet(SENT_KEY, null);
+        if (savedSent != null) sentKeys.addAll(savedSent);
+        for (Map.Entry<String, ?> e : manifestPrefs.getAll().entrySet()) {
+            if (!e.getKey().startsWith("photo.") || !(e.getValue() instanceof String)) continue;
+            try {
+                JSONObject j = new JSONObject((String) e.getValue());
+                int sequence = j.getInt("sequence");
+                String name = j.optString("name", "");
+                String uri = j.optString("uri", "");
+                String group = j.optString("group", "");
+                if (uri.isEmpty()) continue;
+                localPhotos.put(photoKey(group, sequence), new PhotoRecord(sequence, name, uri, group));
+            } catch (Exception ignored) { }
+        }
+    }
+
+    private synchronized void persistPhoto(PhotoRecord r) {
+        try {
+            JSONObject j = new JSONObject();
+            j.put("sequence", r.sequence);
+            j.put("name", r.name == null ? "" : r.name);
+            j.put("uri", r.uri == null ? "" : r.uri);
+            j.put("group", r.groupCode);
+            manifestPrefs.edit().putString(prefPhotoKey(r.groupCode, r.sequence), j.toString()).apply();
+        } catch (Exception ignored) { }
+    }
+
+    private synchronized void persistSentKeys() {
+        manifestPrefs.edit().putStringSet(SENT_KEY, new HashSet<>(sentKeys)).apply();
+    }
+
+    void sendAllAsync(InetAddress hostAddress, String groupCode, int requestId, int minSequence, SendComplete complete) {
         io.execute(() -> {
             int sent = 0;
+            int floor = Math.max(1, minSequence);
             List<PhotoRecord> snapshot = new ArrayList<>();
-            String prefix = groupCode + "|" + hostAddress.getHostAddress() + "|";
+            String group = groupCode == null ? "" : groupCode;
             synchronized (PhotoTransfer.this) {
                 for (PhotoRecord r : localPhotos.values()) {
-                    if (!sentKeys.contains(prefix + r.sequence)) snapshot.add(r);
+                    if (!group.equals(r.groupCode)) continue;
+                    if (r.sequence < floor) continue;
+                    if (!sentKeys.contains(sentKey(group, r.sequence))) snapshot.add(r);
                 }
             }
-            listener.onTransferStatus("Uploading " + snapshot.size() + " new photo(s) to host…");
+            listener.onTransferStatus("Uploading " + snapshot.size() + " photo(s) from this project session to host…");
             for (PhotoRecord r : snapshot) {
                 if (!running) break;
-                if (sendOne(hostAddress, groupCode, requestId, r)) {
+                if (sendOne(hostAddress, group, requestId, r)) {
                     sent++;
-                    synchronized (PhotoTransfer.this) { sentKeys.add(prefix + r.sequence); }
+                    synchronized (PhotoTransfer.this) {
+                        sentKeys.add(sentKey(group, r.sequence));
+                        persistSentKeys();
+                    }
                 }
             }
             listener.onTransferStatus("Photo upload complete • " + sent + " sent");
@@ -176,7 +263,7 @@ final class PhotoTransfer {
             if (!MAGIC.equals(magic)) return;
             String group = in.readUTF();
             String remoteId = in.readUTF();
-            in.readInt(); // requestId, reserved for diagnostics
+            int requestId = in.readInt();
             int sequence = in.readInt();
             in.readUTF(); // original name; host uses a deterministic safe name
 
@@ -185,7 +272,14 @@ final class PhotoTransfer {
                 return;
             }
 
-            String project = hostProjectName;
+            RequestContext request;
+            synchronized (this) { request = requestContexts.get(requestId); }
+            String project = request == null ? hostProjectName : request.project;
+            if (request != null && sequence < request.minSequence) {
+                drain(in);
+                return;
+            }
+
             String key = project + "|" + remoteId + "#" + sequence;
             synchronized (this) {
                 if (receivedKeys.contains(key)) {
@@ -213,6 +307,7 @@ final class PhotoTransfer {
 
     private String saveIncoming(InputStream in, String remoteId, int sequence, String project) {
         OutputStream rawOut = null;
+        Uri u = null;
         try {
             String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
             String safeId = safeSegment(remoteId, "REMOTE").replace(" ", "_");
@@ -222,13 +317,22 @@ final class PhotoTransfer {
             ContentValues v = new ContentValues();
             v.put(MediaStore.Images.Media.DISPLAY_NAME, name);
             v.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
-            if (Build.VERSION.SDK_INT >= 29)
+            if (Build.VERSION.SDK_INT >= 29) {
                 v.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/SyncCam/" + safeProject + "/PHONE_" + safeId);
-            Uri u = context.getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
+            } else {
+                File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+                        "SyncCam/" + safeProject + "/PHONE_" + safeId);
+                if (!dir.exists() && !dir.mkdirs()) return "";
+                v.put(MediaStore.Images.Media.DATA, new File(dir, name).getAbsolutePath());
+            }
+            u = context.getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
             if (u == null) return "";
 
             rawOut = context.getContentResolver().openOutputStream(u);
-            if (rawOut == null) return "";
+            if (rawOut == null) {
+                try { context.getContentResolver().delete(u, null, null); } catch (Exception ignored) { }
+                return "";
+            }
             try (OutputStream out = new BufferedOutputStream(rawOut)) {
                 rawOut = null;
                 byte[] buf = new byte[64 * 1024];
@@ -240,6 +344,9 @@ final class PhotoTransfer {
             }
             return u.toString();
         } catch (Exception e) {
+            if (u != null) {
+                try { context.getContentResolver().delete(u, null, null); } catch (Exception ignored) { }
+            }
             listener.onTransferStatus("Host save failed • " + e.getMessage());
             return "";
         } finally {

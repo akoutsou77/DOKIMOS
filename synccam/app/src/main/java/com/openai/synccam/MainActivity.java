@@ -51,6 +51,7 @@ import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.File;
 import java.io.OutputStream;
 import java.net.DatagramPacket;
 import java.net.InetAddress;
@@ -120,6 +121,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private String hotspotSsid = "";
     private String hotspotPassword = "";
     private String projectName = "Session";
+    private volatile int projectStartSequence = 1;
 
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
@@ -471,6 +473,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             getSharedPreferences("synccam_settings", MODE_PRIVATE).edit().putString("project_name", stored).apply();
         }
         projectName = safeProjectName(stored);
+        if (!projectName.equals(stored)) {
+            getSharedPreferences("synccam_settings", MODE_PRIVATE).edit().putString("project_name", projectName).apply();
+        }
     }
 
     private String safeProjectName(String raw) {
@@ -489,6 +494,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private void showProjectSettings() {
+        if (net != null && !net.host && !net.groupCode.isEmpty()) {
+            Toast.makeText(this, "Project/session is defined on the host phone", Toast.LENGTH_SHORT).show();
+            return;
+        }
         EditText input = new EditText(this);
         input.setSingleLine(true);
         input.setText(projectName);
@@ -515,11 +524,15 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 input.setError("Enter a project/session name");
                 return;
             }
-            projectName = safeProjectName(typed);
-            getSharedPreferences("synccam_settings", MODE_PRIVATE).edit().putString("project_name", projectName).apply();
-            if (photoTransfer != null) photoTransfer.setHostProjectName(projectName);
+            String nextProject = safeProjectName(typed);
+            if (!nextProject.equals(projectName)) {
+                projectName = nextProject;
+                projectStartSequence = Math.max(1, sequence);
+                getSharedPreferences("synccam_settings", MODE_PRIVATE).edit().putString("project_name", projectName).apply();
+                if (photoTransfer != null) photoTransfer.setHostProjectName(projectName);
+            }
             updateProjectButton();
-            setStatus("Project/session • " + projectName);
+            setStatus("Project/session • " + projectName + " • starts at capture #" + projectStartSequence);
             dialog.dismiss();
         }));
         dialog.show();
@@ -981,7 +994,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (net == null) return;
         String c = String.format(Locale.US, "%06d", 100000 + new Random().nextInt(900000));
         code.setText(c);
+        projectStartSequence = Math.max(1, sequence);
         net.becomeHost(c);
+        if (projectButton != null) { projectButton.setEnabled(true); projectButton.setAlpha(1f); }
         setTriggerEnabled(true);
         setPhotoSyncEnabled(true);
         setAutoCaptureEnabled(true);
@@ -1079,6 +1094,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         stopAutoCapture(null);
         net.becomeClient(c);
+        if (projectButton != null) { projectButton.setEnabled(false); projectButton.setAlpha(0.42f); }
         setTriggerEnabled(false);
         setPhotoSyncEnabled(false);
         setAutoCaptureEnabled(false);
@@ -1099,8 +1115,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         int seq = sequence++;
         long target = SystemClock.elapsedRealtimeNanos() + LEAD_NS;
         net.sendCapture(seq, target);
-        scheduleCapture(seq, target, "HOST");
-        setStatus("Capture #" + seq + " armed on all devices");
+        String projectSnapshot = projectName;
+        String groupSnapshot = net.groupCode;
+        scheduleCapture(seq, target, "HOST", projectSnapshot, groupSnapshot);
+        setStatus("Capture #" + seq + " armed on all devices • " + projectSnapshot);
     }
 
     private void syncPhotosToHost() {
@@ -1111,13 +1129,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         net.requestPhotoSync();
     }
 
-    private void scheduleCapture(int seq, long target, String source) {
+    private void scheduleCapture(int seq, long target, String source, String projectSnapshot, String groupSnapshot) {
         activeCountdownSeq = seq;
         showCountdown(seq, target);
         long delay = Math.max(0, target - SystemClock.elapsedRealtimeNanos() - 3_000_000L);
         scheduler.schedule(() -> {
             while (SystemClock.elapsedRealtimeNanos() < target) Thread.onSpinWait();
-            ui(() -> takePicture(seq, source));
+            ui(() -> takePicture(seq, source, projectSnapshot, groupSnapshot));
         }, delay, TimeUnit.NANOSECONDS);
     }
 
@@ -1140,7 +1158,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         });
     }
 
-    private synchronized void takePicture(int seq, String source) {
+    private synchronized void takePicture(int seq, String source, String projectSnapshot, String groupSnapshot) {
         if (camera2 == null || !camera2.isReady() || captureInProgress) return;
         captureInProgress = true;
         activeCountdownSeq = -1;
@@ -1151,7 +1169,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         camera2.capture(new Camera2Controller.CaptureCallback() {
             @Override public void onCaptured(byte[] data, long sensorTimestampNs, Camera2Controller.LensInfo lens) {
                 try {
-                    String uri = saveJpeg(data, seq, lens);
+                    String uri = saveJpeg(data, seq, lens, projectSnapshot, "HOST".equals(source), groupSnapshot);
                     String lensName = lens == null ? "camera" : lens.label;
                     setStatus("Saved capture #" + seq + " • " + source.toLowerCase(Locale.US) + " • " + lensName);
                     if (net != null) net.report(seq, callNs, uri);
@@ -1167,22 +1185,35 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         });
     }
 
-    private String saveJpeg(byte[] data, int seq, Camera2Controller.LensInfo lens) {
+    private String saveJpeg(byte[] data, int seq, Camera2Controller.LensInfo lens, String projectSnapshot, boolean hostCapture, String groupSnapshot) {
+        Uri u = null;
         try {
             String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
             String name = "SyncCam_" + stamp + "_S" + seq + "_" + deviceId + ".jpg";
+            String storageProject = safeProjectName(projectSnapshot == null ? projectName : projectSnapshot);
+            String safeId = safeProjectName(deviceId).replace(" ", "_");
+
             ContentValues v = new ContentValues();
             v.put(MediaStore.Images.Media.DISPLAY_NAME, name);
             v.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
             if (Build.VERSION.SDK_INT >= 29) {
                 String relative = Environment.DIRECTORY_PICTURES + "/SyncCam";
-                if (net != null && net.host) relative += "/" + safeProjectName(projectName) + "/HOST_" + safeProjectName(deviceId);
+                if (hostCapture) relative += "/" + storageProject + "/HOST_" + safeId;
                 v.put(MediaStore.Images.Media.RELATIVE_PATH, relative);
+            } else {
+                String sub = "SyncCam";
+                if (hostCapture) sub += "/" + storageProject + "/HOST_" + safeId;
+                File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), sub);
+                if (!dir.exists() && !dir.mkdirs()) return "";
+                v.put(MediaStore.Images.Media.DATA, new File(dir, name).getAbsolutePath());
             }
-            Uri u = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
+            u = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
             if (u == null) return "";
             try (OutputStream o = getContentResolver().openOutputStream(u)) {
-                if (o == null) return "";
+                if (o == null) {
+                    try { getContentResolver().delete(u, null, null); } catch (Exception ignored) { }
+                    return "";
+                }
                 o.write(data);
             }
             if (locationExif != null) {
@@ -1191,9 +1222,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 locationExif.embed(u, storeGpsInJpeg, lensName, focal, deviceId);
             }
             String uri = u.toString();
-            if (photoTransfer != null) photoTransfer.recordLocal(seq, name, uri);
+            String captureGroup = groupSnapshot == null ? "" : groupSnapshot;
+            if (photoTransfer != null) photoTransfer.recordLocal(seq, name, uri, captureGroup);
             return uri;
         } catch (Exception e) {
+            if (u != null) {
+                try { getContentResolver().delete(u, null, null); } catch (Exception ignored) { }
+            }
             setStatus("Save failed • " + e.getMessage());
             return "";
         }
@@ -1391,12 +1426,14 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             }
 
             int request = photoRequestSeq++;
+            int minSequence = Math.max(1, projectStartSequence);
+            photoTransfer.bindRequestProject(request, projectName, minSequence);
             activePhotoRequest = request;
             expectedPhotoPeers = targets.size();
             receivedAtPhotoStart = photoTransfer.totalReceived();
             synchronized (photoDonePeers) { photoDonePeers.clear(); }
 
-            String message = "PHOTO_SYNC|" + groupCode + "|" + request;
+            String message = "PHOTO_SYNC|" + groupCode + "|" + request + "|" + minSequence;
             for (Map.Entry<String, InetAddress> e : targets.entrySet()) {
                 setDeviceSyncState(e.getKey(), "REQUESTED", AMBER);
                 send(e.getValue(), message);
@@ -1417,8 +1454,10 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                 return;
             }
             int request = photoRequestSeq++;
+            int minSequence = Math.max(1, projectStartSequence);
+            photoTransfer.bindRequestProject(request, projectName, minSequence);
             synchronized (individualPhotoRequests) { individualPhotoRequests.put(request, targetId); }
-            String message = "PHOTO_SYNC|" + groupCode + "|" + request;
+            String message = "PHOTO_SYNC|" + groupCode + "|" + request + "|" + minSequence;
             send(address, message);
             io.schedule(() -> send(address, message), 120, TimeUnit.MILLISECONDS);
             setDeviceSyncState(targetId, "UPLOADING…", AMBER);
@@ -1484,7 +1523,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                                 done = photoDonePeers.size();
                             }
                             if (done >= expectedPhotoPeers) {
-                                io.schedule(() -> {
+                                    io.schedule(() -> {
                                     int saved = Math.max(0, photoTransfer.totalReceived() - receivedAtPhotoStart);
                                     setStatus("Photo sync complete • " + saved + " new client photo(s) stored on host");
                                 }, 600, TimeUnit.MILLISECONDS);
@@ -1514,7 +1553,8 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         hostAddr = from;
                         long hostTarget = Long.parseLong(p[3]);
                         long localTarget = hostTarget - hostMinusClient;
-                        scheduleCapture(seq, localTarget, "CLIENT");
+                        String captureGroup = groupCode;
+                        scheduleCapture(seq, localTarget, "CLIENT", null, captureGroup);
                         setStatus("Capture #" + seq + " received • shutter armed");
                     } else if ("PHOTO_SYNC".equals(p[0]) && p.length >= 3) {
                         int request = Integer.parseInt(p[2]);
@@ -1522,8 +1562,13 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         synchronized (photoSyncSeen) { first = photoSyncSeen.add(request); }
                         if (first) {
                             hostAddr = from;
-                            setStatus("Host requested photos • uploading local captures…");
-                            photoTransfer.sendAllAsync(from, groupCode, request, (requestId, sentCount) ->
+                            int minSequence = 1;
+                            if (p.length >= 4) {
+                                try { minSequence = Math.max(1, Integer.parseInt(p[3])); } catch (Exception ignored) { }
+                            }
+                            final int sessionFloor = minSequence;
+                            setStatus("Host requested project photos • capture #" + sessionFloor + " onward");
+                            photoTransfer.sendAllAsync(from, groupCode, request, sessionFloor, (requestId, sentCount) ->
                                     send(from, "PHOTO_SYNC_DONE|" + groupCode + "|" + deviceId + "|" + requestId + "|" + sentCount));
                         }
                     }
