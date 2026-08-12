@@ -95,7 +95,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private View shadeOverlay, reticleOverlay, topUi, deckUi;
     private TextView uiToggleButton;
     private boolean uiHidden = false;
-    private TextView syncValue, peerValue, hotspotInfo, photoSync, autoCaptureButton, cameraSettingsButton, lensButton, projectButton, storageButton;
+    private TextView syncValue, peerValue, hotspotInfo, photoSync, autoCaptureButton, cameraSettingsButton, lensButton, projectButton, storageButton, storageDiagButton;
     private EditText code;
     private LinearLayout deviceSyncSection, deviceSyncList;
     private HorizontalScrollView deviceSyncScroller;
@@ -410,6 +410,12 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         storageLp.bottomMargin = dp(4);
         deck.addView(storageButton, storageLp);
 
+        storageDiagButton = actionButton("STORAGE TESTS  •  T01-T11", 0xFF343B46, Color.WHITE);
+        LinearLayout.LayoutParams diagLp = new LinearLayout.LayoutParams(-1, dp(44));
+        diagLp.topMargin = dp(2);
+        diagLp.bottomMargin = dp(4);
+        deck.addView(storageDiagButton, diagLp);
+
         TextView footer = label("Per-device photo sync • project/session folders • host interval capture • camera controls adapt to this phone", 9, 0xFF8D96A3, Typeface.NORMAL);
         footer.setGravity(Gravity.CENTER);
         deck.addView(footer);
@@ -445,6 +451,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         projectButton.setOnClickListener(v -> showProjectSettings());
         storageButton.setOnClickListener(v -> chooseSaveRoot());
         storageButton.setOnLongClickListener(v -> { clearSaveRoot(); return true; });
+        storageDiagButton.setOnClickListener(v -> runStorageDiagnostics());
         uiToggleButton.setOnClickListener(v -> toggleUiVisibility());
         copy.setOnClickListener(v -> copyConnectionInfo());
     }
@@ -495,6 +502,54 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         } catch (Exception e) {
             setStatus("SAVE ROOT FAILED • " + e.getClass().getSimpleName() + ": " + (e.getMessage() == null ? "no detail" : e.getMessage()));
         }
+    }
+
+    private void runStorageDiagnostics() {
+        if (camera2 == null || !camera2.isReady()) {
+            Toast.makeText(this, "Camera2 is not ready", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (captureInProgress) {
+            setStatus("Storage tests blocked • capture already in progress");
+            return;
+        }
+        captureInProgress = true;
+        setStatus("STORAGE TESTS • capturing one JPEG for T01-T11…");
+        camera2.capture(new Camera2Controller.CaptureCallback() {
+            @Override public void onCaptured(byte[] data, long sensorTimestampNs, Camera2Controller.LensInfo lens) {
+                scheduler.execute(() -> {
+                    String report;
+                    try {
+                        report = StorageDiagnostics.run(MainActivity.this, data, projectName, deviceId);
+                    } catch (Throwable t) {
+                        report = "STORAGE DIAGNOSTICS FATAL\n" + t.getClass().getSimpleName() + ": " +
+                                (t.getMessage() == null ? "no detail" : t.getMessage());
+                    }
+                    captureInProgress = false;
+                    final String finalReport = report;
+                    ui(() -> showStorageDiagnosticReport(finalReport));
+                });
+            }
+
+            @Override public void onError(String message) {
+                captureInProgress = false;
+                setStatus("STORAGE TESTS camera failure • " + message);
+            }
+        });
+    }
+
+    private void showStorageDiagnosticReport(String report) {
+        setStatus("STORAGE TESTS complete • copy the T01-T11 report");
+        new AlertDialog.Builder(this)
+                .setTitle("Storage tests T01-T11")
+                .setMessage(report)
+                .setNegativeButton("CLOSE", null)
+                .setPositiveButton("COPY REPORT", (d, which) -> {
+                    ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                    cm.setPrimaryClip(ClipData.newPlainText("SyncCam storage diagnostics", report));
+                    Toast.makeText(this, "Storage diagnostic report copied", Toast.LENGTH_SHORT).show();
+                })
+                .show();
     }
 
     private void toggleUiVisibility() {
