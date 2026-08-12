@@ -35,24 +35,24 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SyncCam-v7.6.0-apk
+          name: SyncCam-v7.6.1-apk
           path: synccam/app/build/outputs/apk/debug/app-debug.apk
-      - name: Publish SyncCam v7.6.0 release
+      - name: Publish SyncCam v7.6.1 release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ! grep -q "versionName '7.6.0-session-integrity'" app/build.gradle; then
-            echo "Source is not v7.6.0; release publication skipped."
+          if ! grep -q "versionName '7.6.1-android11-storage'" app/build.gradle; then
+            echo "Source is not v7.6.1; release publication skipped."
             exit 0
           fi
-          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.6.0.apk
-          if gh release view v7.6.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload v7.6.0 /tmp/SyncCam-v7.6.0.apk --clobber --repo "$GITHUB_REPOSITORY"
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.6.1.apk
+          if gh release view v7.6.1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v7.6.1 /tmp/SyncCam-v7.6.1.apk --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create v7.6.0 /tmp/SyncCam-v7.6.0.apk \
+            gh release create v7.6.1 /tmp/SyncCam-v7.6.1.apk \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "SyncCam v7.6.0" \
-              --notes "Audited project/session storage integrity. Host captures stay in Pictures/SyncCam/<Project>/HOST_<id>; client copies stay in PHONE_<id>. Project changes create a capture boundary, sync requests are bound to the project snapshot that started them, stale earlier captures are rejected, client captures are tagged by group, unsynced client photo manifests survive app restarts, persistent device IDs are retained, and Android 8/9 receive explicit project folder fallback storage."
+              --title "SyncCam v7.6.1" \
+              --notes "Android 11 storage hardening. Uses MediaStore pending-write-publication transactions on Android 10+, explicitly targets the primary external media collection, validates JPEG bytes and stored size, surfaces exact save failures instead of false success, and applies the same safe storage path to host-received client photos. No Developer Options or broad storage permission are required on Android 11."
           fi
