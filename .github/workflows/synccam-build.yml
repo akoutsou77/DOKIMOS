@@ -35,24 +35,24 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SyncCam-v7.6.1-apk
+          name: SyncCam-v7.6.2-apk
           path: synccam/app/build/outputs/apk/debug/app-debug.apk
-      - name: Publish SyncCam v7.6.1 release
+      - name: Publish SyncCam v7.6.2 release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ! grep -q "versionName '7.6.1-android11-storage'" app/build.gradle; then
-            echo "Source is not v7.6.1; release publication skipped."
+          if ! grep -q "versionName '7.6.2-api30-compat'" app/build.gradle; then
+            echo "Source is not v7.6.2; release publication skipped."
             exit 0
           fi
-          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.6.1.apk
-          if gh release view v7.6.1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload v7.6.1 /tmp/SyncCam-v7.6.1.apk --clobber --repo "$GITHUB_REPOSITORY"
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.6.2.apk
+          if gh release view v7.6.2 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v7.6.2 /tmp/SyncCam-v7.6.2.apk --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create v7.6.1 /tmp/SyncCam-v7.6.1.apk \
+            gh release create v7.6.2 /tmp/SyncCam-v7.6.2.apk \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "SyncCam v7.6.1" \
-              --notes "Android 11 storage hardening. Uses MediaStore pending-write-publication transactions on Android 10+, explicitly targets the primary external media collection, validates JPEG bytes and stored size, surfaces exact save failures instead of false success, and applies the same safe storage path to host-received client photos. No Developer Options or broad storage permission are required on Android 11."
+              --title "SyncCam v7.6.2" \
+              --notes "Android 11/API 30 storage compatibility release. Adds a persistent SAVE ROOT folder picker using Android Storage Access Framework for devices with unreliable OEM MediaStore providers, keeps automatic MediaStore storage as fallback, uses API-30-compatible MediaStore routing and byte-level JPEG verification, and preserves project/session HOST_<id> and PHONE_<id> folder organization. No Developer Options or all-files permission are required."
           fi
