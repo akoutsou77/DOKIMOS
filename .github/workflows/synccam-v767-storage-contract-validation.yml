@@ -25,7 +25,13 @@ jobs:
         with:
           gradle-version: '8.9'
       - name: Apply storage-contract patch
-        run: python .github/scripts/synccam_v767_storage_contract.py
+        run: |
+          # v7.6.6 has one normal save declaration and one API30/T10 assignment form.
+          sed -i 's/if main.count(old_save) != 2:/if main.count(old_save) != 1:/' .github/scripts/synccam_v767_storage_contract.py
+          sed -i 's/expected 2 matches/expected 1 match/' .github/scripts/synccam_v767_storage_contract.py
+          sed -i 's/main = main.replace(old_save, new_save)$/main = main.replace(old_save, new_save, 1)/' .github/scripts/synccam_v767_storage_contract.py
+          python .github/scripts/synccam_v767_storage_contract.py
+          python .github/scripts/synccam_v767_api30_storage_fixup.py
       - name: Verify storage-layout invariants
         run: |
           python - <<'PY'
@@ -42,11 +48,13 @@ jobs:
               'host propagates project': 'net.sendCapture(seq, target, projectSnapshot);' in main,
               'capture packet carries project': 'target + "|" + captureProject' in main,
               'client reads project': 'p.length >= 5 ? StorageLayout.project(p[4])' in main,
-              'client uses PHONE layout': 'StorageLayout.relativeDevicePath(storageProject, hostCapture, deviceId)' in main,
+              'both save routines centralized': main.count('StorageLayout.relativeDevicePath(storageProject, hostCapture, deviceId)') == 2,
               'incoming original preserved': 'String originalName = in.readUTF()' in photo and 'StorageLayout.incomingFileName(originalName' in photo,
               'incoming PHONE folder': 'StorageLayout.relativeDevicePath(safeProject, false, safeId)' in photo,
               'SAF root aware': 'boolean rootIsSyncCam' in writer,
               'version': "versionCode 20" in gradle and "7.6.7-storage-contract" in gradle,
+              'direct scheduler preserved': 'DIRECT CAMERA PATH' in main and 'captureScheduler.schedule' in main,
+              'API30 T10 preserved': 'saveJpegApi30T10' in main and 'MediaStoreJpegWriter.publish(this, u);' in main,
           }
           failed = [k for k,v in required.items() if not v]
           if failed:
