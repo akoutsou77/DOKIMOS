@@ -35,24 +35,24 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SyncCam-v7.6.6-apk
+          name: SyncCam-v7.6.7-apk
           path: synccam/app/build/outputs/apk/debug/app-debug.apk
-      - name: Publish SyncCam v7.6.6 release
+      - name: Publish SyncCam v7.6.7 release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ! grep -q "versionName '7.6.6-direct-camera-scheduler'" app/build.gradle; then
-            echo "Source is not v7.6.6; release publication skipped."
+          if ! grep -q "versionName '7.6.7-storage-contract'" app/build.gradle; then
+            echo "Source is not v7.6.7; release publication skipped."
             exit 0
           fi
-          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.6.6.apk
-          if gh release view v7.6.6 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload v7.6.6 /tmp/SyncCam-v7.6.6.apk --clobber --repo "$GITHUB_REPOSITORY"
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.6.7.apk
+          if gh release view v7.6.7 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v7.6.7 /tmp/SyncCam-v7.6.7.apk --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create v7.6.6 /tmp/SyncCam-v7.6.6.apk \
+            gh release create v7.6.7 /tmp/SyncCam-v7.6.7.apk \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "SyncCam v7.6.6" \
-              --notes "Capture-path fix after physical Android 11 testing showed storage diagnostics T10 saved correctly while CAPTURE ALL did not. The synchronized shutter now runs on a dedicated capture executor instead of sharing the countdown scheduler, removes Thread.onSpinWait, calls Camera2 directly in the same shape as the working diagnostics shutter, retries Camera2 readiness instead of silently returning, and reports DIRECT CAMERA PATH / JPEG received / API30 T10 PATH stages. API30 storage still uses the proven T10 MediaStore transaction."
+              --title "SyncCam v7.6.7" \
+              --notes "Storage-layout audit and correction on top of the physically validated v7.6.6 capture path. A single StorageLayout contract now defines the SyncCam root, project/session sanitisation, persistent device role folders and capture filenames. Host local captures are stored in Pictures/SyncCam/<Project>/HOST_<id>; client local captures are stored in Pictures/SyncCam/<Project>/PHONE_<id>; the host stores synced client images in the matching PHONE_<id> folder and preserves the original capture-time filename. The synchronized CAPTURE message now carries the host project/session as a trailing backward-compatible field. SAF selection is root-aware: selecting Pictures creates SyncCam beneath it, while selecting Pictures/SyncCam avoids a duplicate SyncCam/SyncCam. Android 11 still uses the proven T10 MediaStore transaction and the v7.6.6 dedicated direct Camera2 scheduler is unchanged."
           fi
