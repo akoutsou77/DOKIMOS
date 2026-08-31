@@ -1,0 +1,1 @@
+Temporary validation marker for SyncCam v7.6.7 storage-layout audit. This file is not intended for promotion to main.
