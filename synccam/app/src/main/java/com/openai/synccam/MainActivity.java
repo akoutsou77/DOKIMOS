@@ -1,1 +1,1739 @@
-PLACEHOLDER
+package com.openai.synccam;
+
+import android.Manifest;
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.ContentValues;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.SurfaceTexture;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.net.DhcpInfo;
+import android.net.Uri;
+import android.net.wifi.SoftApConfiguration;
+import android.net.wifi.WifiConfiguration;
+import android.net.wifi.WifiManager;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
+import android.provider.MediaStore;
+import android.provider.Settings;
+import android.text.InputFilter;
+import android.text.InputType;
+import android.view.Gravity;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
+import android.view.TextureView;
+import android.view.View;
+import android.view.Window;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.view.WindowManager;
+import android.widget.ArrayAdapter;
+import android.widget.CheckBox;
+import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.SeekBar;
+import android.widget.Spinner;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import java.io.File;
+import java.io.OutputStream;
+import java.net.DatagramPacket;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.MulticastSocket;
+import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Random;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+
+@SuppressWarnings("deprecation")
+public class MainActivity extends Activity implements TextureView.SurfaceTextureListener {
+    private static final int REQ = 42;
+    private static final int REQ_SAVE_TREE = 43;
+    private static final int PORT = 39393;
+    private static final String GROUP = "239.255.77.77";
+    private static final long LEAD_NS = 2_500_000_000L;
+
+    private static final int BG_PANEL = 0xE6181B22;
+    private static final int BG_CARD = 0xD9262B34;
+    private static final int ACCENT = 0xFFE95A5A;
+    private static final int GREEN = 0xFF55D58A;
+    private static final int AMBER = 0xFFFFC65C;
+    private static final int MUTED = 0xFFAEB6C2;
+
+    private AspectTextureView surface;
+    private TextView status, sync, peers, roleChip, groupChip, countdownBadge, trigger;
+    private View shadeOverlay, reticleOverlay, topUi, deckUi;
+    private TextView uiToggleButton;
+    private boolean uiHidden = false;
+    private TextView syncValue, peerValue, hotspotInfo, photoSync, autoCaptureButton, cameraSettingsButton, lensButton, projectButton, storageButton;
+    private EditText code;
+    private LinearLayout deviceSyncSection, deviceSyncList;
+    private HorizontalScrollView deviceSyncScroller;
+    private final Map<String, TextView> deviceSyncStatusViews = new HashMap<>();
+    private final Set<String> renderedDeviceIds = new HashSet<>();
+    private View flashOverlay;
+    private Camera2Controller camera2;
+    private LocationExifHelper locationExif;
+    private volatile boolean storeGpsInJpeg = false;
+    private boolean surfaceReady;
+    private Net net;
+    private PhotoTransfer photoTransfer;
+    private String deviceId = "";
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private final ScheduledExecutorService autoScheduler = Executors.newSingleThreadScheduledExecutor();
+    private ScheduledFuture<?> autoCaptureFuture;
+    private volatile boolean autoCaptureRunning = false;
+    private volatile long autoCaptureIntervalMs = 10_000L;
+    private volatile boolean captureInProgress = false;
+    private int sequence = 1;
+    private volatile int activeCountdownSeq = -1;
+
+    private WifiManager.LocalOnlyHotspotReservation hotspotReservation;
+    private String hotspotSsid = "";
+    private String hotspotPassword = "";
+    private String projectName = "Session";
+    private volatile int projectStartSequence = 1;
+
+    @Override public void onCreate(Bundle b) {
+        super.onCreate(b);
+        applyForegroundDisplayMode();
+        loadProjectName();
+        loadDeviceId();
+        Window w = getWindow();
+        w.setStatusBarColor(Color.BLACK);
+        w.setNavigationBarColor(Color.BLACK);
+        buildUi();
+        photoTransfer = new PhotoTransfer(this, deviceId, new PhotoTransfer.Listener() {
+            @Override public boolean acceptIncoming(String groupCode) {
+                return net != null && net.host && groupCode != null && groupCode.equals(net.groupCode);
+            }
+
+            @Override public void onPhotoReceived(String remoteDeviceId, int sequence, String savedUri, int totalReceived) {
+                setDeviceSyncState(remoteDeviceId, "SAVED #" + sequence, GREEN);
+                setStatus("Host saved photo from " + remoteDeviceId + " • capture #" + sequence + " • total received " + totalReceived);
+            }
+
+            @Override public void onTransferStatus(String message) {
+                setStatus(message);
+            }
+        });
+        photoTransfer.setHostProjectName(projectName);
+        photoTransfer.start();
+        requestPermissions();
+    }
+
+    private void applyForegroundDisplayMode() {
+        Window w = getWindow();
+        w.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON | WindowManager.LayoutParams.FLAG_FULLSCREEN);
+
+        if (Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(true);
+            setTurnScreenOn(true);
+        } else {
+            w.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+        }
+
+        View decor = w.getDecorView();
+        if (Build.VERSION.SDK_INT >= 30) {
+            w.setDecorFitsSystemWindows(false);
+            WindowInsetsController controller = w.getInsetsController();
+            if (controller != null) {
+                controller.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
+                controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            }
+        } else {
+            decor.setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                            | View.SYSTEM_UI_FLAG_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+        }
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        applyForegroundDisplayMode();
+    }
+
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) applyForegroundDisplayMode();
+    }
+
+    private void buildUi() {
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(Color.BLACK);
+
+        surface = new AspectTextureView(this);
+        surface.setSurfaceTextureListener(this);
+        root.addView(surface, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
+
+        shadeOverlay = new View(this);
+        GradientDrawable shadeBg = new GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{0xC9000000, 0x18000000, 0x00000000, 0x30000000, 0xC9000000});
+        shadeOverlay.setBackground(shadeBg);
+        root.addView(shadeOverlay, new FrameLayout.LayoutParams(-1, -1));
+
+        reticleOverlay = new ReticleView(this);
+        root.addView(reticleOverlay, new FrameLayout.LayoutParams(-1, -1));
+
+        LinearLayout top = new LinearLayout(this);
+        topUi = top;
+        top.setOrientation(LinearLayout.VERTICAL);
+        top.setPadding(dp(18), dp(12), dp(18), dp(12));
+
+        LinearLayout brandRow = new LinearLayout(this);
+        brandRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        LinearLayout brand = new LinearLayout(this);
+        brand.setOrientation(LinearLayout.VERTICAL);
+        TextView title = label("SYNC", 22, Color.WHITE, Typeface.BOLD);
+        title.setLetterSpacing(0.12f);
+        TextView subtitle = label("CAM  •  MULTI-CAMERA CONTROL", 10, MUTED, Typeface.BOLD);
+        subtitle.setLetterSpacing(0.12f);
+        brand.addView(title);
+        brand.addView(subtitle);
+        brandRow.addView(brand, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        roleChip = chip("STANDBY", 0xCC343A45);
+        brandRow.addView(roleChip, lpWrap(0, 0, 0, 0));
+        top.addView(brandRow);
+
+        LinearLayout identityRow = new LinearLayout(this);
+        identityRow.setGravity(Gravity.CENTER_VERTICAL);
+        identityRow.setPadding(0, dp(8), 0, 0);
+        TextView id = label("DEVICE  " + deviceId, 11, 0xFFCDD3DB, Typeface.BOLD);
+        identityRow.addView(id, new LinearLayout.LayoutParams(0, -2, 1f));
+        groupChip = chip("NO GROUP", 0xA62B3039);
+        identityRow.addView(groupChip);
+        top.addView(identityRow);
+
+        FrameLayout.LayoutParams topLp = new FrameLayout.LayoutParams(-1, -2, Gravity.TOP);
+        topLp.topMargin = dp(8);
+        root.addView(top, topLp);
+
+        countdownBadge = chip("ARMED", 0xE6E95A5A);
+        countdownBadge.setTextSize(16);
+        countdownBadge.setPadding(dp(18), dp(10), dp(18), dp(10));
+        countdownBadge.setVisibility(View.GONE);
+        FrameLayout.LayoutParams countLp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        countLp.topMargin = dp(104);
+        root.addView(countdownBadge, countLp);
+
+        LinearLayout deck = new LinearLayout(this);
+        deckUi = deck;
+        deck.setOrientation(LinearLayout.VERTICAL);
+        deck.setPadding(dp(16), dp(12), dp(16), dp(12));
+        deck.setBackground(roundRect(BG_PANEL, 28, 0, 0));
+
+        LinearLayout stateRow = new LinearLayout(this);
+        stateRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout stateText = new LinearLayout(this);
+        stateText.setOrientation(LinearLayout.VERTICAL);
+        status = label("Starting…", 14, Color.WHITE, Typeface.BOLD);
+        TextView stateHint = label("Router Wi-Fi or one-phone hotspot are both supported", 10, MUTED, Typeface.NORMAL);
+        stateHint.setPadding(0, dp(3), 0, 0);
+        stateText.addView(status);
+        stateText.addView(stateHint);
+        stateRow.addView(stateText, new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView live = chip("● LIVE", 0x66304B3A);
+        live.setTextColor(GREEN);
+        stateRow.addView(live);
+        deck.addView(stateRow);
+
+        LinearLayout metrics = new LinearLayout(this);
+        metrics.setPadding(0, dp(10), 0, 0);
+        LinearLayout syncCard = metricCard("CLOCK SYNC", "WAITING");
+        syncValue = (TextView) syncCard.getChildAt(1);
+        sync = (TextView) syncCard.getChildAt(2);
+        metrics.addView(syncCard, weightedCard(1f, 0, dp(5)));
+        LinearLayout peerCard = metricCard("DEVICES", "0");
+        peerValue = (TextView) peerCard.getChildAt(1);
+        peers = (TextView) peerCard.getChildAt(2);
+        metrics.addView(peerCard, weightedCard(1f, dp(5), 0));
+        deck.addView(metrics);
+
+        TextView groupLabel = label("CAPTURE GROUP", 10, MUTED, Typeface.BOLD);
+        groupLabel.setLetterSpacing(0.12f);
+        LinearLayout.LayoutParams groupLabelLp = new LinearLayout.LayoutParams(-1, -2);
+        groupLabelLp.topMargin = dp(10);
+        deck.addView(groupLabel, groupLabelLp);
+
+        LinearLayout codeRow = new LinearLayout(this);
+        codeRow.setGravity(Gravity.CENTER_VERTICAL);
+        code = new EditText(this);
+        code.setTextColor(Color.WHITE);
+        code.setHintTextColor(0xFF7F8793);
+        code.setHint("000000");
+        code.setTextSize(20);
+        code.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        code.setGravity(Gravity.CENTER);
+        code.setSingleLine(true);
+        code.setInputType(InputType.TYPE_CLASS_NUMBER);
+        code.setFilters(new InputFilter[]{new InputFilter.LengthFilter(6)});
+        code.setSelectAllOnFocus(true);
+        code.setBackground(roundRect(BG_CARD, 14, 1, 0xFF454C58));
+        code.setPadding(dp(12), 0, dp(12), 0);
+        codeRow.addView(code, new LinearLayout.LayoutParams(0, dp(48), 1f));
+
+        TextView copy = smallButton("COPY");
+        LinearLayout.LayoutParams copyLp = new LinearLayout.LayoutParams(dp(72), dp(48));
+        copyLp.leftMargin = dp(8);
+        codeRow.addView(copy, copyLp);
+        deck.addView(codeRow, new LinearLayout.LayoutParams(-1, dp(48)));
+
+        LinearLayout roles = new LinearLayout(this);
+        roles.setPadding(0, dp(8), 0, 0);
+        TextView host = actionButton("HOST + HOTSPOT", 0xFF343B46, Color.WHITE);
+        TextView join = actionButton("JOIN GROUP", 0xFF343B46, Color.WHITE);
+        roles.addView(host, weightedButton(1f, 0, dp(5)));
+        roles.addView(join, weightedButton(1f, dp(5), 0));
+        deck.addView(roles);
+
+        hotspotInfo = label("HOST: creates local Wi-Fi when possible  •  CLIENT: connect to that Wi-Fi, then JOIN", 10, 0xFF9DA7B4, Typeface.NORMAL);
+        hotspotInfo.setGravity(Gravity.CENTER);
+        hotspotInfo.setPadding(dp(4), dp(7), dp(4), dp(3));
+        hotspotInfo.setOnClickListener(v -> openWifiSettings());
+        deck.addView(hotspotInfo);
+
+        deviceSyncSection = new LinearLayout(this);
+        deviceSyncSection.setOrientation(LinearLayout.VERTICAL);
+        deviceSyncSection.setPadding(0, dp(5), 0, 0);
+        deviceSyncSection.setVisibility(View.GONE);
+
+        TextView deviceSyncHeader = label("PHOTO SYNC BY DEVICE", 9, MUTED, Typeface.BOLD);
+        deviceSyncHeader.setLetterSpacing(0.10f);
+        deviceSyncSection.addView(deviceSyncHeader);
+
+        deviceSyncScroller = new HorizontalScrollView(this);
+        deviceSyncScroller.setHorizontalScrollBarEnabled(false);
+        deviceSyncList = new LinearLayout(this);
+        deviceSyncList.setOrientation(LinearLayout.HORIZONTAL);
+        deviceSyncList.setPadding(0, dp(4), 0, dp(2));
+        deviceSyncScroller.addView(deviceSyncList, new HorizontalScrollView.LayoutParams(-2, dp(62)));
+        deviceSyncSection.addView(deviceSyncScroller, new LinearLayout.LayoutParams(-1, dp(66)));
+        deck.addView(deviceSyncSection);
+
+        LinearLayout shutterRow = new LinearLayout(this);
+        shutterRow.setGravity(Gravity.CENTER);
+        shutterRow.setPadding(0, dp(8), 0, dp(4));
+
+        lensButton = smallButton("LENS\nSELECT");
+        lensButton.setGravity(Gravity.CENTER);
+        shutterRow.addView(lensButton, new LinearLayout.LayoutParams(dp(70), dp(60)));
+
+        FrameLayout shutterWrap = new FrameLayout(this);
+        LinearLayout.LayoutParams swLp = new LinearLayout.LayoutParams(dp(104), dp(104));
+        swLp.leftMargin = dp(20);
+        swLp.rightMargin = dp(20);
+        shutterRow.addView(shutterWrap, swLp);
+
+        View ring = new View(this);
+        GradientDrawable ringBg = new GradientDrawable();
+        ringBg.setShape(GradientDrawable.OVAL);
+        ringBg.setColor(0x1AFFFFFF);
+        ringBg.setStroke(dp(3), 0xE6FFFFFF);
+        ring.setBackground(ringBg);
+        shutterWrap.addView(ring, new FrameLayout.LayoutParams(-1, -1));
+
+        trigger = label("CAPTURE\nALL", 13, Color.WHITE, Typeface.BOLD);
+        trigger.setGravity(Gravity.CENTER);
+        trigger.setLetterSpacing(0.05f);
+        GradientDrawable triggerBg = new GradientDrawable();
+        triggerBg.setShape(GradientDrawable.OVAL);
+        triggerBg.setColor(ACCENT);
+        trigger.setBackground(triggerBg);
+        trigger.setEnabled(false);
+        trigger.setAlpha(0.42f);
+        FrameLayout.LayoutParams trigLp = new FrameLayout.LayoutParams(dp(80), dp(80), Gravity.CENTER);
+        shutterWrap.addView(trigger, trigLp);
+
+        photoSync = smallButton("SYNC\nALL");
+        photoSync.setGravity(Gravity.CENTER);
+        photoSync.setEnabled(false);
+        photoSync.setAlpha(0.42f);
+        shutterRow.addView(photoSync, new LinearLayout.LayoutParams(dp(70), dp(60)));
+        deck.addView(shutterRow);
+
+        LinearLayout automationRow = new LinearLayout(this);
+        automationRow.setPadding(0, dp(4), 0, dp(4));
+        autoCaptureButton = actionButton("AUTO CAPTURE  •  OFF", 0xFF343B46, Color.WHITE);
+        autoCaptureButton.setEnabled(false);
+        autoCaptureButton.setAlpha(0.42f);
+        cameraSettingsButton = actionButton("CAMERA SETTINGS", 0xFF343B46, Color.WHITE);
+        automationRow.addView(autoCaptureButton, weightedButton(1f, 0, dp(5)));
+        automationRow.addView(cameraSettingsButton, weightedButton(1f, dp(5), 0));
+        deck.addView(automationRow);
+
+        projectButton = actionButton("PROJECT / SESSION  •  " + projectName, 0xFF343B46, Color.WHITE);
+        LinearLayout.LayoutParams projectLp = new LinearLayout.LayoutParams(-1, dp(44));
+        projectLp.topMargin = dp(4);
+        projectLp.bottomMargin = dp(4);
+        deck.addView(projectButton, projectLp);
+
+        storageButton = actionButton("SAVE ROOT  •  " + MediaStoreJpegWriter.selectedTreeLabel(this), 0xFF343B46, Color.WHITE);
+        LinearLayout.LayoutParams storageLp = new LinearLayout.LayoutParams(-1, dp(44));
+        storageLp.topMargin = dp(2);
+        storageLp.bottomMargin = dp(4);
+        deck.addView(storageButton, storageLp);
+
+        TextView footer = label("Per-device photo sync • project/session folders • host interval capture • camera controls adapt to this phone", 9, 0xFF8D96A3, Typeface.NORMAL);
+        footer.setGravity(Gravity.CENTER);
+        deck.addView(footer);
+
+        FrameLayout.LayoutParams deckLp = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
+        deckLp.leftMargin = dp(8);
+        deckLp.rightMargin = dp(8);
+        deckLp.bottomMargin = dp(8);
+        root.addView(deck, deckLp);
+
+        flashOverlay = new View(this);
+        flashOverlay.setBackgroundColor(Color.WHITE);
+        flashOverlay.setAlpha(0f);
+        flashOverlay.setClickable(false);
+        root.addView(flashOverlay, new FrameLayout.LayoutParams(-1, -1));
+
+        uiToggleButton = smallButton("HIDE UI");
+        uiToggleButton.setAlpha(0.82f);
+        FrameLayout.LayoutParams toggleLp = new FrameLayout.LayoutParams(dp(72), dp(38), Gravity.TOP | Gravity.END);
+        toggleLp.topMargin = dp(8);
+        toggleLp.rightMargin = dp(8);
+        root.addView(uiToggleButton, toggleLp);
+
+        setContentView(root);
+
+        host.setOnClickListener(v -> hostAndHotspot());
+        join.setOnClickListener(v -> join());
+        trigger.setOnClickListener(v -> triggerAll());
+        lensButton.setOnClickListener(v -> showLensSelector());
+        photoSync.setOnClickListener(v -> syncPhotosToHost());
+        autoCaptureButton.setOnClickListener(v -> toggleAutoCapture());
+        cameraSettingsButton.setOnClickListener(v -> showCameraSettings());
+        projectButton.setOnClickListener(v -> showProjectSettings());
+        storageButton.setOnClickListener(v -> chooseSaveRoot());
+        storageButton.setOnLongClickListener(v -> { clearSaveRoot(); return true; });
+        uiToggleButton.setOnClickListener(v -> toggleUiVisibility());
+        copy.setOnClickListener(v -> copyConnectionInfo());
+    }
+
+    private void chooseSaveRoot() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+        Toast.makeText(this, "Choose the SyncCam save root, e.g. Pictures/SyncCam", Toast.LENGTH_LONG).show();
+        startActivityForResult(intent, REQ_SAVE_TREE);
+    }
+
+    private void clearSaveRoot() {
+        String raw = getSharedPreferences(MediaStoreJpegWriter.PREFS, MODE_PRIVATE)
+                .getString(MediaStoreJpegWriter.PREF_SAVE_TREE_URI, "");
+        if (raw != null && !raw.isEmpty()) {
+            try {
+                Uri uri = Uri.parse(raw);
+                getContentResolver().releasePersistableUriPermission(uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            } catch (Exception ignored) { }
+        }
+        getSharedPreferences(MediaStoreJpegWriter.PREFS, MODE_PRIVATE).edit()
+                .remove(MediaStoreJpegWriter.PREF_SAVE_TREE_URI).apply();
+        updateStorageButton();
+        setStatus("Save root reset • automatic MediaStore storage");
+    }
+
+    private void updateStorageButton() {
+        if (storageButton == null) return;
+        String label = MediaStoreJpegWriter.selectedTreeLabel(this);
+        ui(() -> storageButton.setText("SAVE ROOT  •  " + label));
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQ_SAVE_TREE || resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        Uri tree = data.getData();
+        int flags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        try {
+            getContentResolver().takePersistableUriPermission(tree, flags);
+            getSharedPreferences(MediaStoreJpegWriter.PREFS, MODE_PRIVATE).edit()
+                    .putString(MediaStoreJpegWriter.PREF_SAVE_TREE_URI, tree.toString()).apply();
+            updateStorageButton();
+            setStatus("Save root granted • " + MediaStoreJpegWriter.selectedTreeLabel(this));
+        } catch (Exception e) {
+            setStatus("SAVE ROOT FAILED • " + e.getClass().getSimpleName() + ": " + (e.getMessage() == null ? "no detail" : e.getMessage()));
+        }
+    }
+
+    private void toggleUiVisibility() {
+        uiHidden = !uiHidden;
+        int visibility = uiHidden ? View.GONE : View.VISIBLE;
+        if (topUi != null) topUi.setVisibility(visibility);
+        if (deckUi != null) deckUi.setVisibility(visibility);
+        if (shadeOverlay != null) shadeOverlay.setVisibility(visibility);
+        if (reticleOverlay != null) reticleOverlay.setVisibility(visibility);
+        if (countdownBadge != null) {
+            if (uiHidden) countdownBadge.setVisibility(View.GONE);
+            else if (activeCountdownSeq >= 0) countdownBadge.setVisibility(View.VISIBLE);
+        }
+        if (uiToggleButton != null) {
+            uiToggleButton.setText(uiHidden ? "SHOW UI" : "HIDE UI");
+            uiToggleButton.setAlpha(uiHidden ? 0.55f : 0.82f);
+        }
+    }
+
+    private void loadDeviceId() {
+        String stored = getSharedPreferences("synccam_settings", MODE_PRIVATE).getString("device_id", "");
+        if (stored == null || stored.trim().isEmpty()) {
+            stored = UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.US);
+            getSharedPreferences("synccam_settings", MODE_PRIVATE).edit().putString("device_id", stored).apply();
+        }
+        deviceId = stored.trim().toUpperCase(Locale.US);
+    }
+
+    private void loadProjectName() {
+        String stored = getSharedPreferences("synccam_settings", MODE_PRIVATE).getString("project_name", "");
+        if (stored == null || stored.trim().isEmpty()) {
+            stored = "Session_" + new SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(new Date());
+            getSharedPreferences("synccam_settings", MODE_PRIVATE).edit().putString("project_name", stored).apply();
+        }
+        projectName = safeProjectName(stored);
+        if (!projectName.equals(stored)) {
+            getSharedPreferences("synccam_settings", MODE_PRIVATE).edit().putString("project_name", projectName).apply();
+        }
+    }
+
+    private String safeProjectName(String raw) {
+        String s = raw == null ? "" : raw.trim();
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c < 32 || c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') out.append('_');
+            else out.append(c);
+        }
+        String clean = out.toString().trim();
+        while (clean.contains("__")) clean = clean.replace("__", "_");
+        if (clean.isEmpty() || ".".equals(clean) || "..".equals(clean)) clean = "Session";
+        if (clean.length() > 64) clean = clean.substring(0, 64).trim();
+        return clean;
+    }
+
+    private void showProjectSettings() {
+        if (net != null && !net.host && !net.groupCode.isEmpty()) {
+            Toast.makeText(this, "Project/session is defined on the host phone", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setText(projectName);
+        input.setSelectAllOnFocus(true);
+        input.setHint("Project or session name");
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(22), dp(8), dp(22), 0);
+        TextView help = label("Host storage: Pictures/SyncCam/<Project>/HOST_<id> and PHONE_<id>. The name is remembered for the next launch.", 12, MUTED, Typeface.NORMAL);
+        help.setPadding(0, 0, 0, dp(8));
+        box.addView(help);
+        box.addView(input, new LinearLayout.LayoutParams(-1, dp(52)));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Project / Session")
+                .setView(box)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Save", null)
+                .create();
+        dialog.setOnShowListener(v -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(btn -> {
+            String typed = input.getText().toString().trim();
+            if (typed.isEmpty()) {
+                input.setError("Enter a project/session name");
+                return;
+            }
+            String nextProject = safeProjectName(typed);
+            if (!nextProject.equals(projectName)) {
+                projectName = nextProject;
+                projectStartSequence = Math.max(1, sequence);
+                getSharedPreferences("synccam_settings", MODE_PRIVATE).edit().putString("project_name", projectName).apply();
+                if (photoTransfer != null) photoTransfer.setHostProjectName(projectName);
+            }
+            updateProjectButton();
+            setStatus("Project/session • " + projectName + " • starts at capture #" + projectStartSequence);
+            dialog.dismiss();
+        }));
+        dialog.show();
+    }
+
+    private void updateProjectButton() {
+        if (projectButton == null) return;
+        String shown = projectName == null ? "Session" : projectName;
+        if (shown.length() > 28) shown = shown.substring(0, 25) + "…";
+        final String label = "PROJECT / SESSION  •  " + shown;
+        ui(() -> projectButton.setText(label));
+    }
+
+    private LinearLayout metricCard(String title, String value) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(12), dp(8), dp(12), dp(8));
+        card.setBackground(roundRect(BG_CARD, 14, 1, 0xFF353C47));
+        TextView t = label(title, 9, MUTED, Typeface.BOLD);
+        t.setLetterSpacing(0.10f);
+        TextView v = label(value, 16, Color.WHITE, Typeface.BOLD);
+        v.setPadding(0, dp(2), 0, 0);
+        TextView d = label("—", 9, 0xFF99A3B0, Typeface.NORMAL);
+        d.setPadding(0, dp(1), 0, 0);
+        card.addView(t);
+        card.addView(v);
+        card.addView(d);
+        return card;
+    }
+
+    private TextView label(String s, int size, int color, int style) {
+        TextView v = new TextView(this);
+        v.setText(s);
+        v.setTextColor(color);
+        v.setTextSize(size);
+        v.setTypeface(Typeface.create("sans-serif", style));
+        return v;
+    }
+
+    private TextView chip(String s, int color) {
+        TextView v = label(s, 10, Color.WHITE, Typeface.BOLD);
+        v.setGravity(Gravity.CENTER);
+        v.setPadding(dp(10), dp(6), dp(10), dp(6));
+        v.setBackground(roundRect(color, 20, 1, 0x334E5662));
+        return v;
+    }
+
+    private TextView actionButton(String s, int bg, int fg) {
+        TextView b = label(s, 11, fg, Typeface.BOLD);
+        b.setGravity(Gravity.CENTER);
+        b.setLetterSpacing(0.04f);
+        b.setBackground(roundRect(bg, 14, 1, 0xFF4B5360));
+        return b;
+    }
+
+    private TextView smallButton(String s) {
+        TextView b = actionButton(s, 0xFF2C323C, 0xFFE2E6EC);
+        b.setTextSize(9);
+        return b;
+    }
+
+    private GradientDrawable roundRect(int color, int radiusDp, int strokeDp, int strokeColor) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(color);
+        g.setCornerRadius(dp(radiusDp));
+        if (strokeDp > 0) g.setStroke(dp(strokeDp), strokeColor);
+        return g;
+    }
+
+    private int dp(int v) {
+        return Math.round(v * getResources().getDisplayMetrics().density);
+    }
+
+    private LinearLayout.LayoutParams weightedCard(float weight, int left, int right) {
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(66), weight);
+        p.leftMargin = left;
+        p.rightMargin = right;
+        return p;
+    }
+
+    private LinearLayout.LayoutParams weightedButton(float weight, int left, int right) {
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(46), weight);
+        p.leftMargin = left;
+        p.rightMargin = right;
+        return p;
+    }
+
+    private LinearLayout.LayoutParams lpWrap(int l, int t, int r, int b) {
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-2, -2);
+        p.setMargins(l, t, r, b);
+        return p;
+    }
+
+    private void ui(Runnable r) { runOnUiThread(r); }
+
+    private void setStatus(String s) { ui(() -> status.setText(s)); }
+
+    private void setSync(String s) {
+        ui(() -> {
+            sync.setText(s);
+            if (s.contains("HOST")) {
+                syncValue.setText("REFERENCE");
+                syncValue.setTextColor(GREEN);
+            } else if (s.contains("SYNCED")) {
+                syncValue.setText("LOCKED");
+                syncValue.setTextColor(GREEN);
+            } else if (s.contains("calibrating")) {
+                syncValue.setText("CALIBRATING");
+                syncValue.setTextColor(AMBER);
+            } else {
+                syncValue.setText("SEARCHING");
+                syncValue.setTextColor(AMBER);
+            }
+        });
+    }
+
+    private void setPeers(String s) {
+        ui(() -> {
+            peers.setText(s);
+            String digits = s.replaceAll("[^0-9]", "");
+            if (!digits.isEmpty()) peerValue.setText(digits);
+            else if (s.toLowerCase(Locale.US).contains("client")) peerValue.setText("HOST");
+            else peerValue.setText("—");
+        });
+    }
+
+    private void setRole(String role, int color) {
+        ui(() -> {
+            roleChip.setText(role);
+            roleChip.setBackground(roundRect(color, 20, 1, 0x335E6672));
+        });
+    }
+
+    private void setGroupChip(String group) {
+        ui(() -> groupChip.setText(group == null || group.isEmpty() ? "NO GROUP" : "GROUP  " + group));
+    }
+
+    private void setTriggerEnabled(boolean enabled) {
+        ui(() -> {
+            trigger.setEnabled(enabled);
+            trigger.setAlpha(enabled ? 1f : 0.42f);
+        });
+    }
+
+    private void setPhotoSyncEnabled(boolean enabled) {
+        ui(() -> {
+            photoSync.setEnabled(enabled);
+            photoSync.setAlpha(enabled ? 1f : 0.42f);
+        });
+    }
+
+    private void setAutoCaptureEnabled(boolean enabled) {
+        ui(() -> {
+            autoCaptureButton.setEnabled(enabled);
+            autoCaptureButton.setAlpha(enabled ? 1f : 0.42f);
+        });
+    }
+
+    private String formatInterval(long ms) {
+        if (ms % 1000L == 0) return (ms / 1000L) + "s";
+        return String.format(Locale.US, "%.1fs", ms / 1000.0);
+    }
+
+    private void toggleAutoCapture() {
+        if (net == null || !net.host) {
+            Toast.makeText(this, "Automatic capture is controlled by the host", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (autoCaptureRunning) {
+            stopAutoCapture("Automatic capture stopped");
+            return;
+        }
+        showAutoCaptureDialog();
+    }
+
+    private void showAutoCaptureDialog() {
+        EditText seconds = new EditText(this);
+        seconds.setSingleLine(true);
+        seconds.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        seconds.setText(String.format(Locale.US, "%.1f", autoCaptureIntervalMs / 1000.0));
+        seconds.setSelectAllOnFocus(true);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(22), dp(8), dp(22), 0);
+        TextView help = label("Interval in seconds. Minimum 4.0 s. The host generates every synchronized trigger.", 12, MUTED, Typeface.NORMAL);
+        help.setPadding(0, 0, 0, dp(8));
+        box.addView(help);
+        box.addView(seconds, new LinearLayout.LayoutParams(-1, dp(52)));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Automatic synchronized capture")
+                .setView(box)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Start", null)
+                .create();
+        dialog.setOnShowListener(v -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(btn -> {
+            try {
+                double sec = Double.parseDouble(seconds.getText().toString().trim());
+                if (sec < 4.0) {
+                    seconds.setError("Minimum interval is 4.0 seconds");
+                    return;
+                }
+                startAutoCapture(Math.round(sec * 1000.0));
+                dialog.dismiss();
+            } catch (Exception e) {
+                seconds.setError("Enter a valid interval");
+            }
+        }));
+        dialog.show();
+    }
+
+    private synchronized void startAutoCapture(long intervalMs) {
+        stopAutoCapture(null);
+        autoCaptureIntervalMs = intervalMs;
+        autoCaptureRunning = true;
+        ui(() -> {
+            autoCaptureButton.setText("AUTO CAPTURE  •  " + formatInterval(intervalMs));
+            autoCaptureButton.setTextColor(GREEN);
+        });
+        autoCaptureFuture = autoScheduler.scheduleAtFixedRate(() -> {
+            if (!autoCaptureRunning) return;
+            ui(() -> {
+                if (autoCaptureRunning && net != null && net.host) triggerAll();
+            });
+        }, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
+        setStatus("Automatic capture armed • every " + formatInterval(intervalMs));
+    }
+
+    private synchronized void stopAutoCapture(String message) {
+        autoCaptureRunning = false;
+        if (autoCaptureFuture != null) {
+            autoCaptureFuture.cancel(false);
+            autoCaptureFuture = null;
+        }
+        ui(() -> {
+            if (autoCaptureButton != null) {
+                autoCaptureButton.setText("AUTO CAPTURE  •  OFF");
+                autoCaptureButton.setTextColor(Color.WHITE);
+            }
+        });
+        if (message != null) setStatus(message);
+    }
+
+    private TextView cameraSettingLabel(String text) {
+        TextView v = label(text, 11, MUTED, Typeface.BOLD);
+        v.setPadding(0, dp(9), 0, dp(3));
+        return v;
+    }
+
+    private Spinner cameraSpinner(List<String> values, String current) {
+        Spinner spinner = new Spinner(this);
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, values);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinner.setAdapter(adapter);
+        int selected = values.indexOf(current);
+        if (selected >= 0) spinner.setSelection(selected);
+        return spinner;
+    }
+
+    private void showCameraSettings() {
+        if (camera2 == null) {
+            Toast.makeText(this, "Camera2 is not ready", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        camera2.showSettingsDialog(this, storeGpsInJpeg, (gpsEnabled, summary) -> {
+            storeGpsInJpeg = gpsEnabled;
+            if (gpsEnabled && locationExif != null && !locationExif.hasPermission()) {
+                requestPermissions(new String[]{Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION}, REQ);
+            }
+            if (locationExif != null) locationExif.start();
+            String gps = gpsEnabled ? (locationExif == null ? "GPS pending" : locationExif.status()) : "GPS EXIF off";
+            setStatus(summary + " • " + gps);
+        });
+    }
+
+    private void refreshDeviceSyncList(Map<String, InetAddress> snapshot) {
+        final Map<String, InetAddress> peersNow = new HashMap<>(snapshot);
+        ui(() -> {
+            if (deviceSyncSection == null || deviceSyncList == null) return;
+            boolean visible = net != null && net.host && !peersNow.isEmpty();
+            deviceSyncSection.setVisibility(visible ? View.VISIBLE : View.GONE);
+            if (!visible) {
+                deviceSyncList.removeAllViews();
+                deviceSyncStatusViews.clear();
+                renderedDeviceIds.clear();
+                return;
+            }
+
+            Set<String> ids = new HashSet<>(peersNow.keySet());
+            if (ids.equals(renderedDeviceIds)) return;
+            renderedDeviceIds.clear();
+            renderedDeviceIds.addAll(ids);
+            deviceSyncList.removeAllViews();
+            deviceSyncStatusViews.clear();
+
+            ArrayList<String> ordered = new ArrayList<>(ids);
+            ordered.sort(String::compareTo);
+            for (String id : ordered) {
+                InetAddress address = peersNow.get(id);
+                LinearLayout card = new LinearLayout(this);
+                card.setOrientation(LinearLayout.VERTICAL);
+                card.setGravity(Gravity.CENTER);
+                card.setPadding(dp(10), dp(6), dp(10), dp(6));
+                card.setBackground(roundRect(BG_CARD, 12, 1, 0xFF454C58));
+
+                TextView device = label(id, 10, Color.WHITE, Typeface.BOLD);
+                device.setGravity(Gravity.CENTER);
+                TextView ip = label(address == null ? "" : address.getHostAddress(), 8, MUTED, Typeface.NORMAL);
+                ip.setGravity(Gravity.CENTER);
+                TextView action = label("SYNC", 10, GREEN, Typeface.BOLD);
+                action.setGravity(Gravity.CENTER);
+                action.setPadding(0, dp(2), 0, 0);
+                card.addView(device);
+                card.addView(ip);
+                card.addView(action);
+                deviceSyncStatusViews.put(id, action);
+
+                card.setOnClickListener(v -> {
+                    setDeviceSyncState(id, "REQUESTED", AMBER);
+                    if (net != null) net.requestPhotoSyncFor(id);
+                });
+
+                LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(dp(116), dp(58));
+                cp.rightMargin = dp(6);
+                deviceSyncList.addView(card, cp);
+            }
+        });
+    }
+
+    private void setDeviceSyncState(String id, String state, int color) {
+        ui(() -> {
+            TextView v = deviceSyncStatusViews.get(id);
+            if (v != null) {
+                v.setText(state);
+                v.setTextColor(color);
+            }
+        });
+    }
+
+    private void openWifiSettings() {
+        try {
+            if (Build.VERSION.SDK_INT >= 29) startActivity(new Intent(Settings.Panel.ACTION_WIFI));
+            else startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS));
+        } catch (Exception e) {
+            startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS));
+        }
+    }
+
+    private void copyConnectionInfo() {
+        String c = code.getText().toString().trim();
+        if (c.length() != 6) {
+            Toast.makeText(this, "Create or enter a group first", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String text = "SyncCam group: " + c;
+        if (!hotspotSsid.isEmpty()) {
+            text += "\nWi-Fi SSID: " + hotspotSsid;
+            if (!hotspotPassword.isEmpty()) text += "\nWi-Fi password: " + hotspotPassword;
+        }
+        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        cm.setPrimaryClip(ClipData.newPlainText("SyncCam connection", text));
+        Toast.makeText(this, "Connection information copied", Toast.LENGTH_SHORT).show();
+    }
+
+    private void requestPermissions() {
+        ArrayList<String> p = new ArrayList<>();
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
+            p.add(Manifest.permission.CAMERA);
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED)
+            p.add(Manifest.permission.NEARBY_WIFI_DEVICES);
+        if (Build.VERSION.SDK_INT <= 32) {
+            if (checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+                p.add(Manifest.permission.ACCESS_COARSE_LOCATION);
+            if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+                p.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        }
+        if (Build.VERSION.SDK_INT <= 28 && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED)
+            p.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        if (p.isEmpty()) startCore();
+        else requestPermissions(p.toArray(new String[0]), REQ);
+    }
+
+    @Override public void onRequestPermissionsResult(int r, String[] p, int[] g) {
+        super.onRequestPermissionsResult(r, p, g);
+        if (r == REQ && checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCore();
+        else setStatus("Camera permission required");
+    }
+
+    private void startCore() {
+        if (net == null) {
+            net = new Net();
+            net.start();
+        }
+        if (locationExif == null) locationExif = new LocationExifHelper(this);
+        locationExif.start();
+        if (camera2 == null) {
+            camera2 = new Camera2Controller(this, surface, new Camera2Controller.Listener() {
+                @Override public void onReady(String lensLabel) {
+                    updateLensButton();
+                    setStatus("Camera2 ready • " + lensLabel);
+                }
+                @Override public void onError(String message) { setStatus(message); }
+            });
+            updateLensButton();
+        }
+        if (surfaceReady) openCamera();
+    }
+
+    @Override public void onSurfaceTextureAvailable(SurfaceTexture texture, int width, int height) {
+        surfaceReady = true;
+        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            if (camera2 == null) startCore();
+            else openCamera();
+        }
+    }
+
+    @Override public void onSurfaceTextureSizeChanged(SurfaceTexture texture, int width, int height) {
+        if (camera2 != null) camera2.onViewSizeChanged();
+    }
+
+    @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture texture) {
+        surfaceReady = false;
+        closeCamera();
+        return true;
+    }
+
+    @Override public void onSurfaceTextureUpdated(SurfaceTexture texture) { }
+
+    private synchronized void openCamera() {
+        if (camera2 != null && surfaceReady) camera2.open();
+    }
+
+    private synchronized void closeCamera() {
+        if (camera2 != null) camera2.close();
+    }
+
+    private void showLensSelector() {
+        if (camera2 == null) {
+            Toast.makeText(this, "Camera2 is not ready", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        camera2.showLensDialog(this, () -> {
+            updateLensButton();
+            setStatus("Selected lens • " + camera2.getSelectedLensLabel());
+        });
+    }
+
+    private void updateLensButton() {
+        if (lensButton == null) return;
+        String label = camera2 == null ? "SELECT" : camera2.getSelectedLensLabel();
+        int bullet = label.indexOf(" • ");
+        if (bullet > 0) label = label.substring(0, bullet);
+        final String shown = label.toUpperCase(Locale.US);
+        ui(() -> lensButton.setText("LENS\n" + shown));
+    }
+
+    private void hostAndHotspot() {
+        if (net == null) return;
+        String c = String.format(Locale.US, "%06d", 100000 + new Random().nextInt(900000));
+        code.setText(c);
+        projectStartSequence = Math.max(1, sequence);
+        net.becomeHost(c);
+        if (projectButton != null) { projectButton.setEnabled(true); projectButton.setAlpha(1f); }
+        setTriggerEnabled(true);
+        setPhotoSyncEnabled(true);
+        setAutoCaptureEnabled(true);
+        setRole("HOST", 0xCC3A7255);
+        setGroupChip(c);
+        refreshDeviceSyncList(new HashMap<>());
+        setStatus("Host ready • starting local hotspot…");
+        startLocalHotspot();
+    }
+
+    private void startLocalHotspot() {
+        if (hotspotReservation != null) {
+            setStatus("Host ready • local hotspot already active");
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
+            setStatus("Nearby Wi-Fi permission required for hotspot");
+            requestPermissions(new String[]{Manifest.permission.NEARBY_WIFI_DEVICES}, REQ);
+            return;
+        }
+        if (Build.VERSION.SDK_INT <= 32 && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            setStatus("Location permission required for hotspot on this Android version");
+            requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQ);
+            return;
+        }
+        try {
+            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            wm.startLocalOnlyHotspot(new WifiManager.LocalOnlyHotspotCallback() {
+                @Override public void onStarted(WifiManager.LocalOnlyHotspotReservation reservation) {
+                    hotspotReservation = reservation;
+                    String ssid = "";
+                    String pass = "";
+                    try {
+                        if (Build.VERSION.SDK_INT >= 30) {
+                            SoftApConfiguration cfg = reservation.getSoftApConfiguration();
+                            ssid = cfg.getSsid();
+                            pass = cfg.getPassphrase();
+                        } else {
+                            WifiConfiguration cfg = reservation.getWifiConfiguration();
+                            if (cfg != null) {
+                                ssid = cfg.SSID;
+                                pass = cfg.preSharedKey;
+                            }
+                        }
+                    } catch (Exception ignored) { }
+                    hotspotSsid = ssid == null ? "" : stripQuotes(ssid);
+                    hotspotPassword = pass == null ? "" : stripQuotes(pass);
+                    final String shownSsid = hotspotSsid.isEmpty() ? "Android local hotspot" : hotspotSsid;
+                    ui(() -> {
+                        hotspotInfo.setText("HOTSPOT  " + shownSsid + (hotspotPassword.isEmpty() ? "" : "   •   PASS  " + hotspotPassword) + "   •   tap for Wi-Fi");
+                        hotspotInfo.setTextColor(GREEN);
+                    });
+                    setStatus("Hotspot active • connect the other phone, then JOIN group");
+                }
+
+                @Override public void onStopped() {
+                    hotspotReservation = null;
+                    hotspotSsid = "";
+                    hotspotPassword = "";
+                    ui(() -> {
+                        hotspotInfo.setText("Local hotspot stopped • tap for Wi-Fi settings");
+                        hotspotInfo.setTextColor(AMBER);
+                    });
+                    setStatus("Hotspot stopped • host control still active");
+                }
+
+                @Override public void onFailed(int reason) {
+                    hotspotReservation = null;
+                    ui(() -> {
+                        hotspotInfo.setText("Could not create local hotspot • enable phone hotspot manually, then connect client");
+                        hotspotInfo.setTextColor(AMBER);
+                    });
+                    setStatus("Host active • use manual Android hotspot");
+                }
+            }, new Handler(Looper.getMainLooper()));
+        } catch (SecurityException e) {
+            setStatus("Hotspot permission blocked • use manual Android hotspot");
+        } catch (Exception e) {
+            setStatus("Hotspot unavailable • use manual Android hotspot");
+        }
+    }
+
+    private String stripQuotes(String s) {
+        if (s == null) return "";
+        if (s.length() >= 2 && s.startsWith("\"") && s.endsWith("\"")) return s.substring(1, s.length() - 1);
+        return s;
+    }
+
+    private void join() {
+        if (net == null) return;
+        String c = code.getText().toString().trim();
+        if (c.length() != 6) {
+            Toast.makeText(this, "Enter the 6 digit host code", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        stopAutoCapture(null);
+        net.becomeClient(c);
+        if (projectButton != null) { projectButton.setEnabled(false); projectButton.setAlpha(0.42f); }
+        setTriggerEnabled(false);
+        setPhotoSyncEnabled(false);
+        setAutoCaptureEnabled(false);
+        setRole("CLIENT", 0xCC3C5F86);
+        setGroupChip(c);
+        refreshDeviceSyncList(new HashMap<>());
+        InetAddress gw = net.gatewayAddress();
+        if (gw == null) setStatus("Client searching • connect to host hotspot/Wi-Fi if needed");
+        else setStatus("Client searching host at gateway " + gw.getHostAddress());
+    }
+
+    private void triggerAll() {
+        if (net == null || !net.host) return;
+        if (captureInProgress) {
+            setStatus("Capture skipped • previous host photo still processing");
+            return;
+        }
+        int seq = sequence++;
+        long target = SystemClock.elapsedRealtimeNanos() + LEAD_NS;
+        net.sendCapture(seq, target);
+        String projectSnapshot = projectName;
+        String groupSnapshot = net.groupCode;
+        scheduleCapture(seq, target, "HOST", projectSnapshot, groupSnapshot);
+        setStatus("Capture #" + seq + " armed on all devices • " + projectSnapshot);
+    }
+
+    private void syncPhotosToHost() {
+        if (net == null || !net.host) {
+            Toast.makeText(this, "Photo sync is controlled by the host", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        net.requestPhotoSync();
+    }
+
+    private void scheduleCapture(int seq, long target, String source, String projectSnapshot, String groupSnapshot) {
+        activeCountdownSeq = seq;
+        showCountdown(seq, target);
+        long delay = Math.max(0, target - SystemClock.elapsedRealtimeNanos() - 3_000_000L);
+        scheduler.schedule(() -> {
+            while (SystemClock.elapsedRealtimeNanos() < target) Thread.onSpinWait();
+            ui(() -> takePicture(seq, source, projectSnapshot, groupSnapshot));
+        }, delay, TimeUnit.NANOSECONDS);
+    }
+
+    private void showCountdown(int seq, long target) {
+        scheduler.execute(new Runnable() {
+            @Override public void run() {
+                if (activeCountdownSeq != seq) return;
+                long remain = target - SystemClock.elapsedRealtimeNanos();
+                if (remain <= 0) {
+                    ui(() -> countdownBadge.setText("CAPTURE"));
+                    return;
+                }
+                double sec = remain / 1_000_000_000.0;
+                ui(() -> {
+                    countdownBadge.setVisibility(View.VISIBLE);
+                    countdownBadge.setText(String.format(Locale.US, "ARMED  #%d   %.1fs", seq, sec));
+                });
+                scheduler.schedule(this, 100, TimeUnit.MILLISECONDS);
+            }
+        });
+    }
+
+    private synchronized void takePicture(int seq, String source, String projectSnapshot, String groupSnapshot) {
+        if (camera2 == null || !camera2.isReady() || captureInProgress) return;
+        captureInProgress = true;
+        activeCountdownSeq = -1;
+        flashOverlay.setAlpha(0.85f);
+        flashOverlay.animate().alpha(0f).setDuration(260).start();
+        countdownBadge.setVisibility(View.GONE);
+        final long callNs = SystemClock.elapsedRealtimeNanos();
+        camera2.capture(new Camera2Controller.CaptureCallback() {
+            @Override public void onCaptured(byte[] data, long sensorTimestampNs, Camera2Controller.LensInfo lens) {
+                try {
+                    String uri = saveJpeg(data, seq, lens, projectSnapshot, "HOST".equals(source), groupSnapshot);
+                    String lensName = lens == null ? "camera" : lens.label;
+                    if (uri == null || uri.isEmpty()) {
+                        setStatus("SAVE FAILED #" + seq + " • JPEG captured but MediaStore did not save it");
+                    } else {
+                        setStatus("Saved capture #" + seq + (Build.VERSION.SDK_INT == 30 ? " • API30 T10 PATH" : "") + " • " + source.toLowerCase(Locale.US) + " • " + lensName + " • " + uri);
+                        if (net != null) net.report(seq, callNs, uri);
+                    }
+                } finally {
+                    captureInProgress = false;
+                }
+            }
+
+            @Override public void onError(String message) {
+                captureInProgress = false;
+                setStatus(message);
+            }
+        });
+    }
+
+    private String saveJpeg(byte[] data, int seq, Camera2Controller.LensInfo lens, String projectSnapshot, boolean hostCapture, String groupSnapshot) {
+        // Android 11/API 30: use the exact storage transaction proven by diagnostics T10.
+        // Do not mix optional EXIF or manifest work into the commit transaction.
+        if (Build.VERSION.SDK_INT == 30) {
+            return saveJpegApi30T10(data, seq, projectSnapshot, hostCapture, groupSnapshot);
+        }
+
+        Uri u = null;
+        boolean committed = false;
+        try {
+            String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
+            String name = "SyncCam_" + stamp + "_S" + seq + "_" + deviceId + ".jpg";
+            String storageProject = safeProjectName(projectSnapshot == null ? projectName : projectSnapshot);
+            String safeId = safeProjectName(deviceId).replace(" ", "_");
+            String relative = Environment.DIRECTORY_PICTURES + "/SyncCam";
+            if (hostCapture) relative += "/" + storageProject + "/HOST_" + safeId;
+            File legacyDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+                    hostCapture ? "SyncCam/" + storageProject + "/HOST_" + safeId : "SyncCam");
+
+            u = MediaStoreJpegWriter.writePending(this, data, name, relative, legacyDir);
+            if (locationExif != null) {
+                String lensName = lens == null ? "" : lens.label;
+                float focal = lens == null ? 0f : lens.focalLengthMm;
+                locationExif.embed(u, storeGpsInJpeg, lensName, focal, deviceId);
+            }
+            MediaStoreJpegWriter.publish(this, u);
+            committed = true;
+
+            String uri = u.toString();
+            recordLocalAfterCommit(seq, name, uri, groupSnapshot);
+            return uri;
+        } catch (Exception e) {
+            if (!committed) MediaStoreJpegWriter.abort(this, u);
+            String detail = e.getClass().getSimpleName() + ": " + (e.getMessage() == null ? "no detail" : e.getMessage());
+            setStatus("SAVE FAILED #" + seq + " • " + detail);
+            return "";
+        }
+    }
+
+    private String saveJpegApi30T10(byte[] data, int seq, String projectSnapshot, boolean hostCapture, String groupSnapshot) {
+        Uri u = null;
+        boolean committed = false;
+        String name = "";
+        try {
+            String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
+            name = "SyncCam_" + stamp + "_S" + seq + "_" + deviceId + ".jpg";
+            String storageProject = safeProjectName(projectSnapshot == null ? projectName : projectSnapshot);
+            String safeId = safeProjectName(deviceId).replace(" ", "_");
+            String relative = Environment.DIRECTORY_PICTURES + "/SyncCam";
+            if (hostCapture) relative += "/" + storageProject + "/HOST_" + safeId;
+            File legacyDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+                    hostCapture ? "SyncCam/" + storageProject + "/HOST_" + safeId : "SyncCam");
+
+            // EXACT T10 storage sequence: writer -> publish -> committed URI.
+            u = MediaStoreJpegWriter.writePending(this, data, name, relative, legacyDir);
+            MediaStoreJpegWriter.publish(this, u);
+            committed = true;
+            String uri = u.toString();
+
+            // Everything below is bookkeeping only. It must never invalidate/delete the JPEG.
+            recordLocalAfterCommit(seq, name, uri, groupSnapshot);
+            return uri;
+        } catch (Exception e) {
+            if (!committed) MediaStoreJpegWriter.abort(this, u);
+            String detail = e.getClass().getSimpleName() + ": " + (e.getMessage() == null ? "no detail" : e.getMessage());
+            setStatus("SAVE FAILED #" + seq + " • API30 T10 • " + detail);
+            return "";
+        }
+    }
+
+    private void recordLocalAfterCommit(int seq, String name, String uri, String groupSnapshot) {
+        try {
+            String captureGroup = groupSnapshot == null ? "" : groupSnapshot;
+            if (photoTransfer != null) photoTransfer.recordLocal(seq, name, uri, captureGroup);
+        } catch (Throwable ignored) {
+            // The JPEG is already committed. Sync-manifest bookkeeping is strictly non-destructive.
+        }
+    }
+
+    @Override protected void onDestroy() {
+        super.onDestroy();
+        stopAutoCapture(null);
+        closeCamera();
+        if (locationExif != null) locationExif.stop();
+        if (camera2 != null) camera2.shutdown();
+        scheduler.shutdownNow();
+        autoScheduler.shutdownNow();
+        if (net != null) net.stop();
+        if (photoTransfer != null) photoTransfer.stop();
+        try {
+            if (hotspotReservation != null) hotspotReservation.close();
+        } catch (Exception ignored) { }
+        hotspotReservation = null;
+    }
+
+    private final class Net {
+        final ScheduledExecutorService io = Executors.newScheduledThreadPool(2);
+        final Map<String, Long> peerSeen = new HashMap<>();
+        final Map<String, InetAddress> peerAddress = new HashMap<>();
+        final ArrayList<Sample> samples = new ArrayList<>();
+        MulticastSocket socket;
+        InetAddress multicast;
+        InetAddress limitedBroadcast;
+        InetAddress hostAddr;
+        WifiManager.MulticastLock lock;
+        volatile String groupCode = "";
+        volatile boolean host = false;
+        volatile long hostMinusClient = 0;
+        volatile boolean running = true;
+        int syncSeq = 1;
+        int photoRequestSeq = 1;
+        int activePhotoRequest = 0;
+        int expectedPhotoPeers = 0;
+        int receivedAtPhotoStart = 0;
+        final Map<Integer, Boolean> captureSeen = new HashMap<>();
+        final Set<Integer> photoSyncSeen = new HashSet<>();
+        final Set<String> photoDonePeers = new HashSet<>();
+        final Map<Integer, String> individualPhotoRequests = new HashMap<>();
+
+        void start() {
+            io.execute(() -> {
+                try {
+                    WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                    try {
+                        lock = wm.createMulticastLock("SyncCam");
+                        lock.setReferenceCounted(false);
+                        lock.acquire();
+                    } catch (Exception ignored) { }
+
+                    multicast = InetAddress.getByName(GROUP);
+                    limitedBroadcast = InetAddress.getByName("255.255.255.255");
+                    socket = new MulticastSocket(null);
+                    socket.setReuseAddress(true);
+                    socket.setBroadcast(true);
+                    socket.bind(new InetSocketAddress(PORT));
+                    try { socket.joinGroup(multicast); } catch (Exception ignored) { }
+
+                    setStatus("Network ready • hotspot/direct mode enabled");
+                    receive();
+                } catch (Exception e) {
+                    setStatus("Network error • " + e.getMessage());
+                }
+            });
+            io.scheduleAtFixedRate(this::tick, 300, 500, TimeUnit.MILLISECONDS);
+        }
+
+        void becomeHost(String c) {
+            groupCode = c;
+            host = true;
+            hostAddr = null;
+            samples.clear();
+            synchronized (peerSeen) {
+                peerSeen.clear();
+                peerAddress.clear();
+            }
+            synchronized (photoDonePeers) { photoDonePeers.clear(); }
+            setSync("HOST • local clock is reference");
+            setPeers("0 connected clients");
+        }
+
+        void becomeClient(String c) {
+            groupCode = c;
+            host = false;
+            hostAddr = null;
+            samples.clear();
+            captureSeen.clear();
+            synchronized (photoSyncSeen) { photoSyncSeen.clear(); }
+            setSync("Searching for host…");
+            setPeers("client mode");
+        }
+
+        InetAddress gatewayAddress() {
+            try {
+                WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                DhcpInfo d = wm.getDhcpInfo();
+                if (d == null || d.gateway == 0) return null;
+                int g = d.gateway;
+                byte[] q = new byte[]{
+                        (byte) (g & 0xff),
+                        (byte) ((g >> 8) & 0xff),
+                        (byte) ((g >> 16) & 0xff),
+                        (byte) ((g >> 24) & 0xff)
+                };
+                return InetAddress.getByAddress(q);
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        InetAddress subnetBroadcast() {
+            try {
+                WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                DhcpInfo d = wm.getDhcpInfo();
+                if (d == null || d.ipAddress == 0 || d.netmask == 0) return null;
+                int b = (d.ipAddress & d.netmask) | ~d.netmask;
+                byte[] q = new byte[]{
+                        (byte) (b & 0xff),
+                        (byte) ((b >> 8) & 0xff),
+                        (byte) ((b >> 16) & 0xff),
+                        (byte) ((b >> 24) & 0xff)
+                };
+                return InetAddress.getByAddress(q);
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        void tick() {
+            if (socket == null || groupCode.isEmpty()) return;
+            try {
+                if (host) {
+                    String beacon = "BEACON|" + groupCode + "|" + deviceId + "|" + SystemClock.elapsedRealtimeNanos();
+                    send(multicast, beacon);
+                    send(limitedBroadcast, beacon);
+                    synchronized (peerSeen) {
+                        long now = SystemClock.elapsedRealtime();
+                        Set<String> stale = new HashSet<>();
+                        for (Map.Entry<String, Long> e : peerSeen.entrySet()) {
+                            if (now - e.getValue() > 5000) stale.add(e.getKey());
+                        }
+                        for (String id : stale) {
+                            peerSeen.remove(id);
+                            peerAddress.remove(id);
+                        }
+                        setPeers(peerSeen.size() + " connected clients");
+                        refreshDeviceSyncList(new HashMap<>(peerAddress));
+                    }
+                } else if (hostAddr == null) {
+                    String discover = "DISCOVER|" + groupCode + "|" + deviceId;
+                    InetAddress gateway = gatewayAddress();
+                    InetAddress subnet = subnetBroadcast();
+                    if (gateway != null) send(gateway, discover);
+                    if (subnet != null) send(subnet, discover);
+                    send(limitedBroadcast, discover);
+                    send(multicast, discover);
+                } else {
+                    long t1 = SystemClock.elapsedRealtimeNanos();
+                    send(hostAddr, "SYNC_REQ|" + groupCode + "|" + deviceId + "|" + (syncSeq++) + "|" + t1);
+                }
+            } catch (Exception ignored) { }
+        }
+
+        void sendCapture(int seq, long target) {
+            String m = "CAPTURE|" + groupCode + "|" + seq + "|" + target;
+            sendCaptureBurst(m);
+            io.schedule(() -> sendCaptureBurst(m), 70, TimeUnit.MILLISECONDS);
+            io.schedule(() -> sendCaptureBurst(m), 160, TimeUnit.MILLISECONDS);
+        }
+
+        void sendCaptureBurst(String m) {
+            Set<InetAddress> destinations = new HashSet<>();
+            synchronized (peerSeen) {
+                destinations.addAll(peerAddress.values());
+            }
+            for (InetAddress a : destinations) send(a, m);
+            send(multicast, m);
+            send(limitedBroadcast, m);
+        }
+
+        void requestPhotoSync() {
+            if (!host || photoTransfer == null) return;
+            Map<String, InetAddress> targets = new HashMap<>();
+            synchronized (peerSeen) {
+                targets.putAll(peerAddress);
+            }
+            if (targets.isEmpty()) {
+                setStatus("Photo sync • no connected client phones");
+                return;
+            }
+
+            int request = photoRequestSeq++;
+            int minSequence = Math.max(1, projectStartSequence);
+            photoTransfer.bindRequestProject(request, projectName, minSequence);
+            activePhotoRequest = request;
+            expectedPhotoPeers = targets.size();
+            receivedAtPhotoStart = photoTransfer.totalReceived();
+            synchronized (photoDonePeers) { photoDonePeers.clear(); }
+
+            String message = "PHOTO_SYNC|" + groupCode + "|" + request + "|" + minSequence;
+            for (Map.Entry<String, InetAddress> e : targets.entrySet()) {
+                setDeviceSyncState(e.getKey(), "REQUESTED", AMBER);
+                send(e.getValue(), message);
+            }
+            io.schedule(() -> {
+                for (InetAddress address : targets.values()) send(address, message);
+            }, 120, TimeUnit.MILLISECONDS);
+            setStatus("Photo sync requested from " + targets.size() + " client phone(s)…");
+        }
+
+        void requestPhotoSyncFor(String targetId) {
+            if (!host || photoTransfer == null || targetId == null) return;
+            InetAddress address;
+            synchronized (peerSeen) { address = peerAddress.get(targetId); }
+            if (address == null) {
+                setDeviceSyncState(targetId, "OFFLINE", AMBER);
+                setStatus("Photo sync • device " + targetId + " is no longer connected");
+                return;
+            }
+            int request = photoRequestSeq++;
+            int minSequence = Math.max(1, projectStartSequence);
+            photoTransfer.bindRequestProject(request, projectName, minSequence);
+            synchronized (individualPhotoRequests) { individualPhotoRequests.put(request, targetId); }
+            String message = "PHOTO_SYNC|" + groupCode + "|" + request + "|" + minSequence;
+            send(address, message);
+            io.schedule(() -> send(address, message), 120, TimeUnit.MILLISECONDS);
+            setDeviceSyncState(targetId, "UPLOADING…", AMBER);
+            setStatus("Photo sync requested from device " + targetId + "…");
+        }
+
+        void report(int seq, long callNs, String uri) {
+            if (!host && hostAddr != null)
+                send(hostAddr, "CAPTURED|" + groupCode + "|" + deviceId + "|" + seq + "|" + callNs);
+        }
+
+        void receive() {
+            byte[] buf = new byte[2048];
+            while (running) {
+                try {
+                    DatagramPacket p = new DatagramPacket(buf, buf.length);
+                    socket.receive(p);
+                    long recv = SystemClock.elapsedRealtimeNanos();
+                    String m = new String(p.getData(), p.getOffset(), p.getLength(), StandardCharsets.UTF_8);
+                    handle(m, p.getAddress(), recv);
+                } catch (Exception e) {
+                    if (running) setStatus("Network receive error • " + e.getMessage());
+                }
+            }
+        }
+
+        void rememberPeer(String id, InetAddress address) {
+            synchronized (peerSeen) {
+                peerSeen.put(id, SystemClock.elapsedRealtime());
+                peerAddress.put(id, address);
+            }
+        }
+
+        void handle(String m, InetAddress from, long recv) {
+            try {
+                String[] p = m.split("\\|");
+                if (p.length < 2 || !p[1].equals(groupCode)) return;
+                if (host) {
+                    if ("DISCOVER".equals(p[0]) && p.length >= 3) {
+                        rememberPeer(p[2], from);
+                        send(from, "BEACON|" + groupCode + "|" + deviceId + "|" + SystemClock.elapsedRealtimeNanos());
+                    } else if ("SYNC_REQ".equals(p[0]) && p.length >= 5) {
+                        rememberPeer(p[2], from);
+                        long t2 = recv;
+                        long t3 = SystemClock.elapsedRealtimeNanos();
+                        send(from, "SYNC_RESP|" + groupCode + "|" + p[2] + "|" + p[3] + "|" + p[4] + "|" + t2 + "|" + t3);
+                    } else if ("CAPTURED".equals(p[0]) && p.length >= 3) {
+                        rememberPeer(p[2], from);
+                    } else if ("PHOTO_SYNC_DONE".equals(p[0]) && p.length >= 5) {
+                        rememberPeer(p[2], from);
+                        int request = Integer.parseInt(p[3]);
+                        String individualTarget;
+                        synchronized (individualPhotoRequests) { individualTarget = individualPhotoRequests.remove(request); }
+                        int sentCount = Integer.parseInt(p[4]);
+                        if (individualTarget != null) {
+                            setDeviceSyncState(p[2], sentCount == 0 ? "UP TO DATE" : "DONE • " + sentCount, GREEN);
+                            setStatus("Device " + p[2] + " photo sync complete • " + sentCount + " new photo(s)");
+                        } else if (request == activePhotoRequest) {
+                            setDeviceSyncState(p[2], sentCount == 0 ? "UP TO DATE" : "DONE • " + sentCount, GREEN);
+                            int done;
+                            synchronized (photoDonePeers) {
+                                photoDonePeers.add(p[2]);
+                                done = photoDonePeers.size();
+                            }
+                            if (done >= expectedPhotoPeers) {
+                                    io.schedule(() -> {
+                                    int saved = Math.max(0, photoTransfer.totalReceived() - receivedAtPhotoStart);
+                                    setStatus("Photo sync complete • " + saved + " new client photo(s) stored on host");
+                                }, 600, TimeUnit.MILLISECONDS);
+                            } else {
+                                setStatus("Photo sync • " + done + "/" + expectedPhotoPeers + " client phones finished");
+                            }
+                        }
+                    }
+                } else {
+                    if ("BEACON".equals(p[0])) {
+                        if (hostAddr == null || !hostAddr.equals(from)) {
+                            hostAddr = from;
+                            setStatus("Host found at " + from.getHostAddress() + " • calibrating clocks");
+                        }
+                    } else if ("SYNC_RESP".equals(p[0]) && p.length >= 7 && p[2].equals(deviceId)) {
+                        hostAddr = from;
+                        long t1 = Long.parseLong(p[4]);
+                        long t2 = Long.parseLong(p[5]);
+                        long t3 = Long.parseLong(p[6]);
+                        long t4 = recv;
+                        long rtt = (t4 - t1) - (t3 - t2);
+                        long off = ((t2 - t1) + (t3 - t4)) / 2;
+                        addSample(rtt, off);
+                    } else if ("CAPTURE".equals(p[0]) && p.length >= 4) {
+                        int seq = Integer.parseInt(p[2]);
+                        if (captureSeen.put(seq, true) != null) return;
+                        hostAddr = from;
+                        long hostTarget = Long.parseLong(p[3]);
+                        long localTarget = hostTarget - hostMinusClient;
+                        String captureGroup = groupCode;
+                        scheduleCapture(seq, localTarget, "CLIENT", null, captureGroup);
+                        setStatus("Capture #" + seq + " received • shutter armed");
+                    } else if ("PHOTO_SYNC".equals(p[0]) && p.length >= 3) {
+                        int request = Integer.parseInt(p[2]);
+                        boolean first;
+                        synchronized (photoSyncSeen) { first = photoSyncSeen.add(request); }
+                        if (first) {
+                            hostAddr = from;
+                            int minSequence = 1;
+                            if (p.length >= 4) {
+                                try { minSequence = Math.max(1, Integer.parseInt(p[3])); } catch (Exception ignored) { }
+                            }
+                            final int sessionFloor = minSequence;
+                            setStatus("Host requested project photos • capture #" + sessionFloor + " onward");
+                            photoTransfer.sendAllAsync(from, groupCode, request, sessionFloor, (requestId, sentCount) ->
+                                    send(from, "PHOTO_SYNC_DONE|" + groupCode + "|" + deviceId + "|" + requestId + "|" + sentCount));
+                        }
+                    }
+                }
+            } catch (Exception ignored) { }
+        }
+
+        void addSample(long rtt, long off) {
+            if (rtt < 0 || rtt > 500_000_000L) return;
+            synchronized (samples) {
+                samples.add(new Sample(rtt, off));
+                if (samples.size() > 30) samples.remove(0);
+                ArrayList<Sample> c = new ArrayList<>(samples);
+                c.sort(Comparator.comparingLong(a -> a.rtt));
+                int n = Math.min(7, c.size());
+                long sum = 0;
+                for (int i = 0; i < n; i++) sum += c.get(i).off;
+                hostMinusClient = sum / n;
+                String state = c.size() >= 5 ? "SYNCED" : "calibrating";
+                setSync(String.format(Locale.US, "%s • offset %+.3f ms • RTT %.2f ms",
+                        state, hostMinusClient / 1e6, c.get(0).rtt / 1e6));
+                if (c.size() >= 5) setStatus("Connected • direct host link " + (hostAddr == null ? "" : hostAddr.getHostAddress()));
+            }
+        }
+
+        synchronized void send(InetAddress a, String s) {
+            if (socket == null || a == null) return;
+            try {
+                byte[] b = s.getBytes(StandardCharsets.UTF_8);
+                socket.send(new DatagramPacket(b, b.length, a, PORT));
+            } catch (Exception ignored) { }
+        }
+
+        void stop() {
+            running = false;
+            io.shutdownNow();
+            try {
+                if (socket != null) {
+                    try { if (multicast != null) socket.leaveGroup(multicast); } catch (Exception ignored) { }
+                    socket.close();
+                }
+            } catch (Exception ignored) { }
+            try {
+                if (lock != null && lock.isHeld()) lock.release();
+            } catch (Exception ignored) { }
+        }
+    }
+
+    private static final class Sample {
+        final long rtt, off;
+        Sample(long r, long o) { rtt = r; off = o; }
+    }
+
+    private static final class ReticleView extends View {
+        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        ReticleView(Context c) {
+            super(c);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(1.5f * getResources().getDisplayMetrics().density);
+            p.setColor(0x7AFFFFFF);
+        }
+
+        @Override protected void onDraw(Canvas c) {
+            super.onDraw(c);
+            float cx = getWidth() / 2f;
+            float cy = getHeight() * 0.38f;
+            float d = 16f * getResources().getDisplayMetrics().density;
+            float gap = 6f * getResources().getDisplayMetrics().density;
+            c.drawLine(cx - d, cy, cx - gap, cy, p);
+            c.drawLine(cx + gap, cy, cx + d, cy, p);
+            c.drawLine(cx, cy - d, cx, cy - gap, p);
+            c.drawLine(cx, cy + gap, cx, cy + d, p);
+            c.drawCircle(cx, cy, 2.2f * getResources().getDisplayMetrics().density, p);
+        }
+    }
+}
