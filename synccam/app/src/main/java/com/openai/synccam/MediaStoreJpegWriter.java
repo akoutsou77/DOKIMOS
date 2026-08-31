@@ -173,8 +173,17 @@ final class MediaStoreJpegWriter {
         while (subPath.startsWith("/")) subPath = subPath.substring(1);
         String picturesPrefix = Environment.DIRECTORY_PICTURES + "/";
         if (subPath.startsWith(picturesPrefix)) subPath = subPath.substring(picturesPrefix.length());
-        if (subPath.equals("SyncCam") || subPath.equals("SyncCam/")) subPath = "";
-        else if (subPath.startsWith("SyncCam/")) subPath = subPath.substring("SyncCam/".length());
+
+        // If the user selected Pictures/SyncCam, that directory is already the SyncCam root.
+        // If the user selected Pictures (or any other parent), retain the SyncCam component so
+        // the invariant <selected-parent>/SyncCam/<Project>/<role> is never lost.
+        String rootName = root.getName();
+        boolean rootIsSyncCam = rootName != null && StorageLayout.ROOT_FOLDER.equalsIgnoreCase(rootName.trim());
+        if (rootIsSyncCam) {
+            if (subPath.equals(StorageLayout.ROOT_FOLDER) || subPath.equals(StorageLayout.ROOT_FOLDER + "/")) subPath = "";
+            else if (subPath.startsWith(StorageLayout.ROOT_FOLDER + "/"))
+                subPath = subPath.substring((StorageLayout.ROOT_FOLDER + "/").length());
+        }
         while (subPath.endsWith("/")) subPath = subPath.substring(0, subPath.length() - 1);
 
         DocumentFile dir = root;
