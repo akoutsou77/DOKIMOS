@@ -8,8 +8,8 @@ android {
         applicationId 'com.openai.synccam'
         minSdk 26
         targetSdk 35
-        versionCode 18
-        versionName '7.6.5-api30-direct-t10-capture'
+        versionCode 19
+        versionName '7.6.6-direct-camera-scheduler'
     }
 
     buildTypes {

@@ -110,6 +110,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private PhotoTransfer photoTransfer;
     private String deviceId = "";
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private final ScheduledExecutorService captureScheduler = Executors.newSingleThreadScheduledExecutor();
     private final ScheduledExecutorService autoScheduler = Executors.newSingleThreadScheduledExecutor();
     private ScheduledFuture<?> autoCaptureFuture;
     private volatile boolean autoCaptureRunning = false;
@@ -1189,10 +1190,16 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     private void scheduleCapture(int seq, long target, String source, String projectSnapshot, String groupSnapshot) {
         activeCountdownSeq = seq;
         showCountdown(seq, target);
-        long delay = Math.max(0, target - SystemClock.elapsedRealtimeNanos() - 3_000_000L);
-        scheduler.schedule(() -> {
-            while (SystemClock.elapsedRealtimeNanos() < target) Thread.onSpinWait();
-            ui(() -> takePicture(seq, source, projectSnapshot, groupSnapshot));
+
+        // Capture timing must never share the countdown/UI scheduler. The storage-diagnostics
+        // shutter proved that a direct Camera2 capture works on the affected API30 devices.
+        // Fire on a dedicated executor and use only a tiny final busy wait for timing accuracy.
+        long delay = Math.max(0L, target - SystemClock.elapsedRealtimeNanos() - 3_000_000L);
+        captureScheduler.schedule(() -> {
+            while (SystemClock.elapsedRealtimeNanos() < target) {
+                // Intentionally empty: avoids Thread.onSpinWait compatibility differences.
+            }
+            attemptScheduledCapture(seq, source, projectSnapshot, groupSnapshot, 0);
         }, delay, TimeUnit.NANOSECONDS);
     }
 
@@ -1215,25 +1222,66 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         });
     }
 
-    private synchronized void takePicture(int seq, String source, String projectSnapshot, String groupSnapshot) {
-        if (camera2 == null || !camera2.isReady() || captureInProgress) return;
-        captureInProgress = true;
+    private void attemptScheduledCapture(int seq, String source, String projectSnapshot, String groupSnapshot, int attempt) {
+        Camera2Controller cam = camera2;
+        if (cam == null || !cam.isReady()) {
+            if (attempt < 20) {
+                if (attempt == 0) setStatus("Capture #" + seq + " • waiting for Camera2 ready…");
+                captureScheduler.schedule(
+                        () -> attemptScheduledCapture(seq, source, projectSnapshot, groupSnapshot, attempt + 1),
+                        100, TimeUnit.MILLISECONDS);
+            } else {
+                activeCountdownSeq = -1;
+                setStatus("CAPTURE FAILED #" + seq + " • Camera2 not ready after synchronized trigger");
+            }
+            return;
+        }
+
+        synchronized (this) {
+            if (captureInProgress) {
+                if (attempt < 20) {
+                    captureScheduler.schedule(
+                            () -> attemptScheduledCapture(seq, source, projectSnapshot, groupSnapshot, attempt + 1),
+                            100, TimeUnit.MILLISECONDS);
+                } else {
+                    activeCountdownSeq = -1;
+                    setStatus("CAPTURE FAILED #" + seq + " • previous capture remained busy");
+                }
+                return;
+            }
+            captureInProgress = true;
+        }
+
         activeCountdownSeq = -1;
-        flashOverlay.setAlpha(0.85f);
-        flashOverlay.animate().alpha(0f).setDuration(260).start();
-        countdownBadge.setVisibility(View.GONE);
+        ui(() -> {
+            flashOverlay.setAlpha(0.85f);
+            flashOverlay.animate().alpha(0f).setDuration(260).start();
+            countdownBadge.setVisibility(View.GONE);
+        });
+
         final long callNs = SystemClock.elapsedRealtimeNanos();
-        camera2.capture(new Camera2Controller.CaptureCallback() {
+        setStatus("Capture #" + seq + " • DIRECT CAMERA PATH • shutter requested");
+
+        // This is intentionally the same direct Camera2 call shape used by the working
+        // storage-diagnostics button. No UI-thread wrapper or shared countdown executor.
+        cam.capture(new Camera2Controller.CaptureCallback() {
             @Override public void onCaptured(byte[] data, long sensorTimestampNs, Camera2Controller.LensInfo lens) {
                 try {
+                    setStatus("Capture #" + seq + " • JPEG received • " + data.length + " bytes");
                     String uri = saveJpeg(data, seq, lens, projectSnapshot, "HOST".equals(source), groupSnapshot);
                     String lensName = lens == null ? "camera" : lens.label;
                     if (uri == null || uri.isEmpty()) {
-                        setStatus("SAVE FAILED #" + seq + " • JPEG captured but MediaStore did not save it");
+                        setStatus("SAVE FAILED #" + seq + " • JPEG captured but storage transaction failed");
                     } else {
-                        setStatus("Saved capture #" + seq + (Build.VERSION.SDK_INT == 30 ? " • API30 T10 PATH" : "") + " • " + source.toLowerCase(Locale.US) + " • " + lensName + " • " + uri);
+                        setStatus("Saved capture #" + seq
+                                + (Build.VERSION.SDK_INT == 30 ? " • API30 T10 PATH" : "")
+                                + " • DIRECT CAMERA PATH • " + source.toLowerCase(Locale.US)
+                                + " • " + lensName + " • " + uri);
                         if (net != null) net.report(seq, callNs, uri);
                     }
+                } catch (Throwable t) {
+                    setStatus("CAPTURE FAILED #" + seq + " • callback " + t.getClass().getSimpleName()
+                            + ": " + (t.getMessage() == null ? "no detail" : t.getMessage()));
                 } finally {
                     captureInProgress = false;
                 }
@@ -1241,7 +1289,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
 
             @Override public void onError(String message) {
                 captureInProgress = false;
-                setStatus(message);
+                setStatus("CAPTURE FAILED #" + seq + " • Camera2 • " + message);
             }
         });
     }
@@ -1332,6 +1380,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         if (locationExif != null) locationExif.stop();
         if (camera2 != null) camera2.shutdown();
         scheduler.shutdownNow();
+        captureScheduler.shutdownNow();
         autoScheduler.shutdownNow();
         if (net != null) net.stop();
         if (photoTransfer != null) photoTransfer.stop();
