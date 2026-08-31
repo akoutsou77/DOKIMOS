@@ -70,8 +70,29 @@ final class MediaStoreJpegWriter {
                                      File legacyDir, long expectedBytes) throws IOException {
         validateJpegFile(source, expectedBytes);
 
-        IOException treeFailure = null;
         String tree = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(PREF_SAVE_TREE_URI, "");
+
+        // Physical Android 11 tests proved MediaStore routes T03-T07 and the complete T10
+        // writer path. Prefer that proven route on API 30 even if a stale/unsupported SAF
+        // SAVE ROOT exists. SAF remains an emergency fallback only when MediaStore fails.
+        if (Build.VERSION.SDK_INT == 30) {
+            IOException mediaFailure;
+            try {
+                return writeViaMediaStore(context, source, displayName, relativePath, legacyDir, expectedBytes);
+            } catch (IOException e) {
+                mediaFailure = e;
+            }
+            if (tree != null && !tree.trim().isEmpty()) {
+                try {
+                    return writeToSelectedTree(context, source, displayName, relativePath, expectedBytes, Uri.parse(tree));
+                } catch (IOException treeFailure) {
+                    throw combine("Android 11 MediaStore and selected save folder both failed", mediaFailure, treeFailure);
+                }
+            }
+            throw mediaFailure;
+        }
+
+        IOException treeFailure = null;
         if (tree != null && !tree.trim().isEmpty()) {
             try {
                 return writeToSelectedTree(context, source, displayName, relativePath, expectedBytes, Uri.parse(tree));

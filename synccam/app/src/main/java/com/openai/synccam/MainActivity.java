@@ -1259,12 +1259,22 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                     hostCapture ? "SyncCam/" + storageProject + "/HOST_" + safeId : "SyncCam");
 
             u = MediaStoreJpegWriter.writePending(this, data, name, relative, legacyDir);
-            if (locationExif != null) {
-                String lensName = lens == null ? "" : lens.label;
-                float focal = lens == null ? 0f : lens.focalLengthMm;
-                locationExif.embed(u, storeGpsInJpeg, lensName, focal, deviceId);
+
+            // API 30 devices in the field proved that the MediaStore write/publish path works
+            // (storage diagnostics T03-T07/T10), while reopening the just-created JPEG for an
+            // ExifInterface rw mutation is the only extra step in the normal capture path.
+            // Publish the proven bytes unchanged on Android 11. Optional EXIF enrichment must
+            // never be allowed to invalidate/delete an otherwise good capture.
+            if (Build.VERSION.SDK_INT == 30) {
+                MediaStoreJpegWriter.publish(this, u);
+            } else {
+                if (locationExif != null) {
+                    String lensName = lens == null ? "" : lens.label;
+                    float focal = lens == null ? 0f : lens.focalLengthMm;
+                    locationExif.embed(u, storeGpsInJpeg, lensName, focal, deviceId);
+                }
+                MediaStoreJpegWriter.publish(this, u);
             }
-            MediaStoreJpegWriter.publish(this, u);
 
             String uri = u.toString();
             String captureGroup = groupSnapshot == null ? "" : groupSnapshot;
