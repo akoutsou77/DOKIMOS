@@ -35,24 +35,24 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SyncCam-v7.6.4-apk
+          name: SyncCam-v7.6.5-apk
           path: synccam/app/build/outputs/apk/debug/app-debug.apk
-      - name: Publish SyncCam v7.6.4 release
+      - name: Publish SyncCam v7.6.5 release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ! grep -q "versionName '7.6.4-api30-proven-storage'" app/build.gradle; then
-            echo "Source is not v7.6.4; release publication skipped."
+          if ! grep -q "versionName '7.6.5-api30-direct-t10-capture'" app/build.gradle; then
+            echo "Source is not v7.6.5; release publication skipped."
             exit 0
           fi
-          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.6.4.apk
-          if gh release view v7.6.4 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload v7.6.4 /tmp/SyncCam-v7.6.4.apk --clobber --repo "$GITHUB_REPOSITORY"
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.6.5.apk
+          if gh release view v7.6.5 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v7.6.5 /tmp/SyncCam-v7.6.5.apk --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create v7.6.4 /tmp/SyncCam-v7.6.4.apk \
+            gh release create v7.6.5 /tmp/SyncCam-v7.6.5.apk \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "SyncCam v7.6.4" \
-              --notes "Android 11/API 30 fix derived from physical storage diagnostics: T03, T04, T05, T06, T07 and the complete T10 SyncCam writer all succeeded, with T10 landing in the correct project/HOST folder. API 30 now prefers the proven MediaStore route even when a SAVE ROOT is configured, and the freshly saved JPEG is published without reopening it through ExifInterface rw. Optional EXIF enrichment cannot invalidate a valid API 30 capture. Android 12+ retains the existing metadata path. Project/session and per-device folder organization are preserved."
+              --title "SyncCam v7.6.5" \
+              --notes "Android 11/API 30 capture-path correction derived from physical T10 diagnostics. The normal shutter now enters a dedicated saveJpegApi30T10 transaction: MediaStore writer -> publish -> committed URI. Optional EXIF and photo-manifest bookkeeping are outside the commit transaction, and once the JPEG is committed no later exception is allowed to abort/delete it. The UI reports API30 T10 PATH after a successful Android 11 shutter save. Project/session HOST_<id> and PHONE_<id> organization is preserved."
           fi
