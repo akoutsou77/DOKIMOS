@@ -47,8 +47,23 @@ jobs:
             git commit -m "SyncCam storage diagnostics T01-T11 UI"
             git push origin HEAD:agent/synccam-apk-build
           fi
-      - name: Upload diagnostic APK
+      - name: Upload diagnostic APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: SyncCam-v7.6.3-storage-diagnostics-test
           path: synccam/app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish diagnostics GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.6.3-STORAGE-DIAGNOSTICS.apk
+          if gh release view v7.6.3-storage-diagnostics --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v7.6.3-storage-diagnostics /tmp/SyncCam-v7.6.3-STORAGE-DIAGNOSTICS.apk --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create v7.6.3-storage-diagnostics /tmp/SyncCam-v7.6.3-STORAGE-DIAGNOSTICS.apk \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "SyncCam v7.6.3 STORAGE DIAGNOSTICS" \
+              --prerelease \
+              --notes "Diagnostic build for Android 11 storage failures. Captures one real JPEG and runs numbered storage tests T01-T11 across internal storage, app-specific external storage, multiple MediaStore routes, Storage Access Framework selected-folder routes, the current SyncCam writer, and raw public Pictures access. Use COPY REPORT and return the complete T01-T11 result. This diagnostic release does not replace the stable v7.6.2 main release."
+          fi
