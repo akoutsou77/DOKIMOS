@@ -265,7 +265,7 @@ final class PhotoTransfer {
             String remoteId = in.readUTF();
             int requestId = in.readInt();
             int sequence = in.readInt();
-            in.readUTF(); // original name; host uses a deterministic safe name
+            String originalName = in.readUTF(); // preserve capture-time filename after sanitisation
 
             if (!listener.acceptIncoming(group)) {
                 drain(in);
@@ -289,7 +289,7 @@ final class PhotoTransfer {
                 receivedKeys.add(key);
             }
 
-            String uri = saveIncoming(in, remoteId, sequence, project);
+            String uri = saveIncoming(in, remoteId, sequence, project, originalName);
             if (uri.isEmpty()) {
                 synchronized (this) { receivedKeys.remove(key); }
                 return;
@@ -305,16 +305,14 @@ final class PhotoTransfer {
         }
     }
 
-    private String saveIncoming(InputStream in, String remoteId, int sequence, String project) {
+    private String saveIncoming(InputStream in, String remoteId, int sequence, String project, String originalName) {
         Uri u = null;
         try {
-            String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
-            String safeId = safeSegment(remoteId, "REMOTE").replace(" ", "_");
-            String safeProject = safeSegment(project, "Session");
-            String name = "SyncCam_" + safeId + "_S" + sequence + "_" + stamp + ".jpg";
-            String relative = Environment.DIRECTORY_PICTURES + "/SyncCam/" + safeProject + "/PHONE_" + safeId;
-            File legacyDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-                    "SyncCam/" + safeProject + "/PHONE_" + safeId);
+            String safeId = StorageLayout.device(remoteId, "REMOTE");
+            String safeProject = StorageLayout.project(project);
+            String name = StorageLayout.incomingFileName(originalName, safeId, sequence);
+            String relative = StorageLayout.relativeDevicePath(safeProject, false, safeId);
+            File legacyDir = StorageLayout.legacyDeviceDir(safeProject, false, safeId);
 
             u = MediaStoreJpegWriter.writePending(context, in, name, relative, legacyDir);
             MediaStoreJpegWriter.publish(context, u);
@@ -335,18 +333,7 @@ final class PhotoTransfer {
     }
 
     private static String safeSegment(String raw, String fallback) {
-        String s = raw == null ? "" : raw.trim();
-        StringBuilder out = new StringBuilder();
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (c < 32 || c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') out.append('_');
-            else out.append(c);
-        }
-        String clean = out.toString().trim();
-        while (clean.contains("__")) clean = clean.replace("__", "_");
-        if (clean.isEmpty() || ".".equals(clean) || "..".equals(clean)) clean = fallback;
-        if (clean.length() > 64) clean = clean.substring(0, 64).trim();
-        return clean;
+        return StorageLayout.safeSegment(raw, fallback);
     }
 
     void stop() {

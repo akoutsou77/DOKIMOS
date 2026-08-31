@@ -537,18 +537,7 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
     }
 
     private String safeProjectName(String raw) {
-        String s = raw == null ? "" : raw.trim();
-        StringBuilder out = new StringBuilder();
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (c < 32 || c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') out.append('_');
-            else out.append(c);
-        }
-        String clean = out.toString().trim();
-        while (clean.contains("__")) clean = clean.replace("__", "_");
-        if (clean.isEmpty() || ".".equals(clean) || "..".equals(clean)) clean = "Session";
-        if (clean.length() > 64) clean = clean.substring(0, 64).trim();
-        return clean;
+        return StorageLayout.project(raw);
     }
 
     private void showProjectSettings() {
@@ -1172,9 +1161,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         }
         int seq = sequence++;
         long target = SystemClock.elapsedRealtimeNanos() + LEAD_NS;
-        net.sendCapture(seq, target);
         String projectSnapshot = projectName;
         String groupSnapshot = net.groupCode;
+        net.sendCapture(seq, target, projectSnapshot);
         scheduleCapture(seq, target, "HOST", projectSnapshot, groupSnapshot);
         setStatus("Capture #" + seq + " armed on all devices • " + projectSnapshot);
     }
@@ -1305,13 +1294,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         boolean committed = false;
         try {
             String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
-            String name = "SyncCam_" + stamp + "_S" + seq + "_" + deviceId + ".jpg";
-            String storageProject = safeProjectName(projectSnapshot == null ? projectName : projectSnapshot);
-            String safeId = safeProjectName(deviceId).replace(" ", "_");
-            String relative = Environment.DIRECTORY_PICTURES + "/SyncCam";
-            if (hostCapture) relative += "/" + storageProject + "/HOST_" + safeId;
-            File legacyDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-                    hostCapture ? "SyncCam/" + storageProject + "/HOST_" + safeId : "SyncCam");
+            String fallbackProject = hostCapture ? projectName : "Session_" + (groupSnapshot == null ? "" : groupSnapshot);
+            String storageProject = StorageLayout.project(projectSnapshot == null ? fallbackProject : projectSnapshot);
+            String name = StorageLayout.captureFileName(stamp, seq, deviceId);
+            String relative = StorageLayout.relativeDevicePath(storageProject, hostCapture, deviceId);
+            File legacyDir = StorageLayout.legacyDeviceDir(storageProject, hostCapture, deviceId);
 
             u = MediaStoreJpegWriter.writePending(this, data, name, relative, legacyDir);
             if (locationExif != null) {
@@ -1339,13 +1326,11 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
         String name = "";
         try {
             String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
-            name = "SyncCam_" + stamp + "_S" + seq + "_" + deviceId + ".jpg";
-            String storageProject = safeProjectName(projectSnapshot == null ? projectName : projectSnapshot);
-            String safeId = safeProjectName(deviceId).replace(" ", "_");
-            String relative = Environment.DIRECTORY_PICTURES + "/SyncCam";
-            if (hostCapture) relative += "/" + storageProject + "/HOST_" + safeId;
-            File legacyDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-                    hostCapture ? "SyncCam/" + storageProject + "/HOST_" + safeId : "SyncCam");
+            String fallbackProject = hostCapture ? projectName : "Session_" + (groupSnapshot == null ? "" : groupSnapshot);
+            String storageProject = StorageLayout.project(projectSnapshot == null ? fallbackProject : projectSnapshot);
+            name = StorageLayout.captureFileName(stamp, seq, deviceId);
+            String relative = StorageLayout.relativeDevicePath(storageProject, hostCapture, deviceId);
+            File legacyDir = StorageLayout.legacyDeviceDir(storageProject, hostCapture, deviceId);
 
             // EXACT T10 storage sequence: writer -> publish -> committed URI.
             u = MediaStoreJpegWriter.writePending(this, data, name, relative, legacyDir);
@@ -1537,8 +1522,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
             } catch (Exception ignored) { }
         }
 
-        void sendCapture(int seq, long target) {
-            String m = "CAPTURE|" + groupCode + "|" + seq + "|" + target;
+        void sendCapture(int seq, long target, String projectSnapshot) {
+            String captureProject = StorageLayout.project(projectSnapshot);
+            String m = "CAPTURE|" + groupCode + "|" + seq + "|" + target + "|" + captureProject;
             sendCaptureBurst(m);
             io.schedule(() -> sendCaptureBurst(m), 70, TimeUnit.MILLISECONDS);
             io.schedule(() -> sendCaptureBurst(m), 160, TimeUnit.MILLISECONDS);
@@ -1694,8 +1680,9 @@ public class MainActivity extends Activity implements TextureView.SurfaceTexture
                         long hostTarget = Long.parseLong(p[3]);
                         long localTarget = hostTarget - hostMinusClient;
                         String captureGroup = groupCode;
-                        scheduleCapture(seq, localTarget, "CLIENT", null, captureGroup);
-                        setStatus("Capture #" + seq + " received • shutter armed");
+                        String captureProject = p.length >= 5 ? StorageLayout.project(p[4]) : StorageLayout.project("Session_" + captureGroup);
+                        scheduleCapture(seq, localTarget, "CLIENT", captureProject, captureGroup);
+                        setStatus("Capture #" + seq + " received • " + captureProject + " • shutter armed");
                     } else if ("PHOTO_SYNC".equals(p[0]) && p.length >= 3) {
                         int request = Integer.parseInt(p[2]);
                         boolean first;
