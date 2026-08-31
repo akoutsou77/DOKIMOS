@@ -1,0 +1,55 @@
+name: Validate SyncCam v7.6.6 direct capture scheduler
+
+on:
+  push:
+    branches:
+      - agent/synccam-apk-build
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/synccam-apk-build
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Apply v7.6.6 patch
+        run: python3 .github/scripts/synccam_v766_capture_scheduler.py
+      - name: Verify capture-path invariants
+        run: |
+          grep -q "versionCode 19" synccam/app/build.gradle
+          grep -q "7.6.6-direct-camera-scheduler" synccam/app/build.gradle
+          grep -q "captureScheduler = Executors.newSingleThreadScheduledExecutor" synccam/app/src/main/java/com/openai/synccam/MainActivity.java
+          grep -q "DIRECT CAMERA PATH" synccam/app/src/main/java/com/openai/synccam/MainActivity.java
+          grep -q "attemptScheduledCapture" synccam/app/src/main/java/com/openai/synccam/MainActivity.java
+          grep -q "saveJpegApi30T10" synccam/app/src/main/java/com/openai/synccam/MainActivity.java
+          ! grep -q "Thread.onSpinWait" synccam/app/src/main/java/com/openai/synccam/MainActivity.java
+          test "$(grep -c 'private void takePicture' synccam/app/src/main/java/com/openai/synccam/MainActivity.java)" = "0"
+      - name: Build APK
+        working-directory: synccam
+        run: gradle assembleDebug --stacktrace
+      - name: Commit validated generated source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add synccam/app/build.gradle synccam/app/src/main/java/com/openai/synccam/MainActivity.java
+          git commit -m "SyncCam v7.6.6 direct capture scheduler" || true
+          git push origin HEAD:agent/synccam-apk-build
+      - name: Upload validated APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SyncCam-v7.6.6-direct-capture-test
+          path: synccam/app/build/outputs/apk/debug/app-debug.apk
