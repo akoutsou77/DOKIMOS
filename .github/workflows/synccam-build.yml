@@ -35,24 +35,24 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SyncCam-v7.6.5-apk
+          name: SyncCam-v7.6.6-apk
           path: synccam/app/build/outputs/apk/debug/app-debug.apk
-      - name: Publish SyncCam v7.6.5 release
+      - name: Publish SyncCam v7.6.6 release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ! grep -q "versionName '7.6.5-api30-direct-t10-capture'" app/build.gradle; then
-            echo "Source is not v7.6.5; release publication skipped."
+          if ! grep -q "versionName '7.6.6-direct-camera-scheduler'" app/build.gradle; then
+            echo "Source is not v7.6.6; release publication skipped."
             exit 0
           fi
-          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.6.5.apk
-          if gh release view v7.6.5 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload v7.6.5 /tmp/SyncCam-v7.6.5.apk --clobber --repo "$GITHUB_REPOSITORY"
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SyncCam-v7.6.6.apk
+          if gh release view v7.6.6 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v7.6.6 /tmp/SyncCam-v7.6.6.apk --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create v7.6.5 /tmp/SyncCam-v7.6.5.apk \
+            gh release create v7.6.6 /tmp/SyncCam-v7.6.6.apk \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "SyncCam v7.6.5" \
-              --notes "Android 11/API 30 capture-path correction derived from physical T10 diagnostics. The normal shutter now enters a dedicated saveJpegApi30T10 transaction: MediaStore writer -> publish -> committed URI. Optional EXIF and photo-manifest bookkeeping are outside the commit transaction, and once the JPEG is committed no later exception is allowed to abort/delete it. The UI reports API30 T10 PATH after a successful Android 11 shutter save. Project/session HOST_<id> and PHONE_<id> organization is preserved."
+              --title "SyncCam v7.6.6" \
+              --notes "Capture-path fix after physical Android 11 testing showed storage diagnostics T10 saved correctly while CAPTURE ALL did not. The synchronized shutter now runs on a dedicated capture executor instead of sharing the countdown scheduler, removes Thread.onSpinWait, calls Camera2 directly in the same shape as the working diagnostics shutter, retries Camera2 readiness instead of silently returning, and reports DIRECT CAMERA PATH / JPEG received / API30 T10 PATH stages. API30 storage still uses the proven T10 MediaStore transaction."
           fi
